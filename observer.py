@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 import threading
-from typing import Dict, Protocol, Sequence
+from typing import Dict, Literal, Protocol, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -18,17 +18,17 @@ class Observer(Protocol):
         self,
         time: NDArray[np.float_],
         samples: NDArray[np.float_],
-    ) -> None:  # pragma: no cover - interface definition
+    ) -> None: 
         ...
 
     def on_adc(
         self,
         time: NDArray[np.float_],
         samples: NDArray[np.float_],
-    ) -> None:  # pragma: no cover - interface definition
+    ) -> None: 
         ...
 
-    def on_rx(self, outputs: ReceiverOutputs) -> None:  # pragma: no cover
+    def on_rx(self, outputs: ReceiverOutputs) -> None: 
         ...
 
 
@@ -61,6 +61,7 @@ class PyQtGraphObserver:
     --------
     - Native zoom/pan via mouse wheel and drag (pyqtgraph defaults).
     - Space bar or toolbar button toggles pause/resume.
+    - Toolbar button switches between time-domain waveform and FFT magnitude views.
     - Mouse hover shows the current time/value readback.
     - Optional down-sampling to keep refresh responsive.
     """
@@ -72,6 +73,8 @@ class PyQtGraphObserver:
         show_rx: bool = True,
         max_points: int = 5000,
         time_scale: float = 1e3,
+        view_domain: Literal["time", "frequency"] = "time",
+        freq_view_max: float | None = 1e6,
         window_title: str = "LVS Simulation Monitor",
         plot_height: int = 220,
         row_spacing: int = 32,
@@ -93,6 +96,8 @@ class PyQtGraphObserver:
         self.show_rx = show_rx
         self.max_points = max_points
         self.time_scale = time_scale
+        self.view_domain = view_domain
+        self.freq_view_max = freq_view_max
         self.plot_height = plot_height
         self.row_spacing = row_spacing
 
@@ -132,9 +137,16 @@ class PyQtGraphObserver:
         self._toolbar = QtWidgets.QToolBar("Controls", parent=self._window)
         self._window.addToolBar(self._toolbar)
 
+        self._view_action = self._toolbar.addAction("Frequency View")
+        self._view_action.setCheckable(True)
+        self._view_action.toggled.connect(
+            lambda checked: self._set_view_domain("frequency" if checked else "time")
+        )
+
         self._play_pause_action = self._toolbar.addAction("Play")
         self._play_pause_action.setCheckable(True)
         self._play_pause_action.toggled.connect(self._toggle_play_pause)
+        self._view_action.setChecked(self.view_domain == "frequency")
 
         self._toolbar.addSeparator()
         self._toolbar.addAction("Clear", self._clear_plots)
@@ -163,8 +175,8 @@ class PyQtGraphObserver:
             plot = self._plot_container.addPlot(title=key.upper())
             plot.showGrid(x=True, y=True, alpha=0.3)
             plot.setMouseEnabled(x=True, y=False)
-            plot.setLabel("bottom", "Time", units=self._time_unit())
-            plot.setLabel("left", "Amplitude")
+            plot.setLabel("bottom", self._x_axis_label(), units=self._x_axis_units())
+            plot.setLabel("left", "Amplitude" if self.view_domain == "time" else "|X(f)|")
             plot.setMinimumHeight(self.plot_height)
             curve = plot.plot([], [], pen=pg.mkPen(width=1.2), symbol="o", symbolSize=3)
             self._plots[key] = plot
@@ -177,6 +189,7 @@ class PyQtGraphObserver:
 
         for plot in list(self._plots.values())[1:]:
             plot.setXLink(list(self._plots.values())[0])
+        self._apply_x_range_limits()
 
     # endregion -----------------------------------------------------------
 
@@ -203,7 +216,6 @@ class PyQtGraphObserver:
     def wait_for_restart_after_completion(self, poll_ms: int = 50) -> bool:
         """
         After a run completes, wait for Clear to be pressed or the window to close.
-
         Returns True if a restart was requested, False if the window closed.
         """
         if self.consume_restart_request():
@@ -223,7 +235,7 @@ class PyQtGraphObserver:
             self.QtCore.QThread.msleep(poll_ms)
         raise RuntimeError(closed_message)
 
-    def _key_press(self, event):  # pragma: no cover - GUI callback
+    def _key_press(self, event):
         if event.key() == self.QtCore.Qt.Key_Space:
             if self._active:
                 self._play_pause_action.toggle()
@@ -280,15 +292,17 @@ class PyQtGraphObserver:
             return "µs"
         return "scaled"
 
-    def _on_mouse_moved(self, pos):  # pragma: no cover - GUI feedback
+    def _on_mouse_moved(self, pos):
         for key, plot in self._plots.items():
             if plot.sceneBoundingRect().contains(pos):
                 vb = plot.getViewBox()
                 mouse_point = vb.mapSceneToView(pos)
-                time_value = mouse_point.x() / self.time_scale
-                amp_value = mouse_point.y()
                 self._status_label.setText(
-                    f"{key.upper()}  t={time_value:.6f}s  value={amp_value:.6f}"
+                    self._format_hover_status(
+                        key,
+                        mouse_point.x(),
+                        mouse_point.y(),
+                    )
                 )
                 break
 
@@ -328,25 +342,122 @@ class PyQtGraphObserver:
     ) -> None:
         if not self._active or self._paused:
             return
-        curve = self._curves.get(key)
-        if curve is None:
+        if not self._render_curve(key, time, samples):
             return
-
-        if len(time) > self.max_points:
-            idx = np.linspace(0, len(time) - 1, self.max_points).astype(int)
-            time = time[idx]
-            samples = samples[idx]
-
-        curve.setData(time * self.time_scale, samples)
         self._last_time[key] = time
         self._last_data[key] = samples
         self._process_events()
 
+    def _render_curve(
+        self,
+        key: str,
+        time: NDArray[np.float_],
+        samples: NDArray[np.float_],
+    ) -> bool:
+        curve = self._curves.get(key)
+        if curve is None:
+            return False
+
+        x_vals, y_vals = self._transform_data(time, samples)
+
+        if self.max_points and len(x_vals) > self.max_points:
+            idx = np.linspace(0, len(x_vals) - 1, self.max_points).astype(int)
+            x_vals = x_vals[idx]
+            y_vals = y_vals[idx]
+
+        curve.setData(x_vals, y_vals)
+        return True
+
+    def _set_view_domain(self, domain: Literal["time", "frequency"]) -> None:
+        if domain == self.view_domain:
+            return
+        self.view_domain = domain
+        if self._view_action is not None:
+            self._view_action.blockSignals(True)
+            self._view_action.setChecked(domain == "frequency")
+            self._view_action.blockSignals(False)
+        self._update_axis_labels()
+        self._apply_x_range_limits()
+        self._replot_all_cached()
+
+    def _update_axis_labels(self) -> None:
+        for plot in self._plots.values():
+            plot.setLabel("bottom", self._x_axis_label(), units=self._x_axis_units())
+            plot.setLabel("left", "Amplitude" if self.view_domain == "time" else "|X(f)|")
+
+    def _apply_x_range_limits(self) -> None:
+        if not self._plots:
+            return
+        for plot in self._plots.values():
+            if self.view_domain == "frequency" and self.freq_view_max:
+                plot.enableAutoRange("x", False)
+                plot.setXRange(0, self.freq_view_max, padding=0.01)
+            else:
+                plot.enableAutoRange("x", True)
+
+    def _replot_all_cached(self) -> None:
+        updated = False
+        for key in self._curves:
+            time = self._last_time.get(key)
+            data = self._last_data.get(key)
+            if time is None or data is None:
+                continue
+            if self._render_curve(key, time, data):
+                updated = True
+        if updated:
+            self._process_events()
+
+    def _transform_data(
+        self,
+        time: NDArray[np.float_],
+        samples: NDArray[np.float_],
+    ) -> tuple[NDArray[np.float_], NDArray[np.float_]]:
+        if self.view_domain == "frequency":
+            return self._compute_fft(time, samples)
+        return time * self.time_scale, samples
+
+    def _compute_fft(
+        self,
+        time: NDArray[np.float_],
+        samples: NDArray[np.float_],
+    ) -> tuple[NDArray[np.float_], NDArray[np.float_]]:
+        if len(samples) == 0:
+            empty = np.array([], dtype=float)
+            return empty, empty
+        if len(time) < 2:
+            freqs = np.array([0.0], dtype=float)
+            magnitudes = np.abs(samples[:1])
+            return freqs, magnitudes
+        spacing = float(np.mean(np.diff(time)))
+        if spacing <= 0:
+            spacing = 1.0
+        fft_vals = np.fft.rfft(samples)
+        freqs = np.fft.rfftfreq(len(samples), d=spacing)
+        magnitudes = np.abs(fft_vals)
+        if self.freq_view_max is not None:
+            mask = freqs <= self.freq_view_max
+            if not np.any(mask):
+                mask = np.ones_like(freqs, dtype=bool)
+            freqs = freqs[mask]
+            magnitudes = magnitudes[mask]
+        return freqs, magnitudes
+
+    def _x_axis_label(self) -> str:
+        return "Frequency" if self.view_domain == "frequency" else "Time"
+
+    def _x_axis_units(self) -> str:
+        return "Hz" if self.view_domain == "frequency" else self._time_unit()
+
+    def _format_hover_status(self, key: str, x_val: float, y_val: float) -> str:
+        if self.view_domain == "frequency":
+            return f"{key.upper()}  f={x_val:.1f}Hz  |X|={y_val:.3f}"
+        time_value = x_val / self.time_scale
+        return f"{key.upper()}  t={time_value:.6f}s  value={y_val:.6f}"
 
     # region Lifecycle ----------------------------------------------------
     def exec(self) -> None:
         """Enter the Qt event loop to keep the window open."""
-        if self._owns_app:  # pragma: no cover - GUI only
+        if self._owns_app:
             self._app.exec()
         else:
             # If we don't own the app, ensure events keep flowing.

@@ -160,12 +160,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=1e3,
         help="Scale factor applied to time axis in plots (default ms).",
     )
-    parser.add_argument(
-        "--view-domain",
-        choices=("time", "frequency"),
-        default="time",
-        help="Plot either the time-domain waveform or the chunk FFT magnitude.",
-    )
     return parser
 
 
@@ -184,8 +178,6 @@ def set_config_from_arg(args: argparse.Namespace) -> SimulationConfig:
         config.plot_stages = tuple(args.plot_stages)
     if getattr(args, "time_scale", None) is not None:
         config.time_scale = args.time_scale
-    if getattr(args, "view_domain", None) is not None:
-        config.view_domain = args.view_domain
 
     return config
 
@@ -199,7 +191,6 @@ def create_observers_from_config(config: SimulationConfig) -> List[Observer] | N
             show_adc="adc" in stages,
             show_rx="rx" in stages,
             time_scale=config.time_scale,
-            #view_domain=config.view_domain,
         )
     except RuntimeError as exc:
         raise SystemExit(f"Unable to start PyQtGraph observer: {exc}") from exc
