@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Optional
 
 import numpy as np
 from numpy.typing import NDArray
@@ -40,9 +40,8 @@ class Transmitter:
         self._pulse_length = config.pulse_length
         self._pulse_period = config.pulse_period
         self._noise_std = 0.0
-        self._noise_cache: dict[int, float] = {}
         self._noise_resolution = 1e-12
-
+        self._noise_seed_base = 0.0
         if self.config.randomize:
             self._init_random_variation()
         if self.config.use_awgn:
@@ -51,7 +50,7 @@ class Transmitter:
     def reset(self) -> None:
         """Reset the internal state to the start of the signal."""
         self._sample_cursor = 0
-        self._noise_cache.clear()
+        self._noise_seed_base = self._draw_noise_seed()
 
         if self.config.randomize:
             self._init_random_variation()
@@ -99,7 +98,6 @@ class Transmitter:
 
     def _init_random_variation(self) -> None:
         """Initialize random offsets within the configured tolerances."""
-        self._noise_cache.clear()
         freq = self._rng.uniform(
             self.config.center_freq - self.config.freq_tolerance,
             self.config.center_freq + self.config.freq_tolerance,
@@ -122,7 +120,7 @@ class Transmitter:
         snr_linear = 10.0 ** (self.config.awgn_snr / 10.0)
         noise_power = base_power / snr_linear
         self._noise_std = math.sqrt(noise_power)
-        self._noise_cache.clear()
+        self._noise_seed_base = self._draw_noise_seed()
 
     def _awgn(self, time: NDArray[np.float64]) -> NDArray[np.float64]:
         """Return deterministic AWGN samples keyed by quantized time."""
@@ -130,13 +128,33 @@ class Transmitter:
             return np.zeros_like(time, dtype=np.float64)
 
         time_arr = np.asarray(time, dtype=np.float64).reshape(-1)
-        noise = np.empty_like(time_arr)
+        if time_arr.size == 0:
+            return np.empty_like(time_arr)
+
         scale = 1.0 / self._noise_resolution
-        for idx, t in enumerate(time_arr):
-            key = int(round(t * scale))
-            value = self._noise_cache.get(key)
-            if value is None:
-                value = float(self._rng.normal(0.0, self._noise_std))
-                self._noise_cache[key] = value
-            noise[idx] = value
+        keys = np.round(time_arr * scale).astype(np.int64)
+        seeds = self._mix_keys(keys)
+
+        unique_seeds, inverse = np.unique(seeds, return_inverse=True)
+        noise_unique = np.empty_like(unique_seeds, dtype=np.float64)
+        for idx, seed in enumerate(unique_seeds):
+            rng = np.random.default_rng(int(seed))
+            noise_unique[idx] = rng.normal(0.0, self._noise_std)
+
+        noise = noise_unique[inverse]
         return noise.reshape(time.shape)
+
+    def _draw_noise_seed(self) -> int:
+        """Return a fresh random 64-bit seed derived from the main RNG."""
+        return int(self._rng.integers(0, np.iinfo(np.uint64).max, dtype=np.uint64))
+
+    def _mix_keys(self, keys: NDArray[np.int64]) -> NDArray[np.uint64]:
+        """Hash integer time keys with the base seed to get deterministic RNG seeds."""
+        mask = np.uint64(0xFFFFFFFFFFFFFFFF)
+        mixed = (keys.astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)) & mask
+        mixed ^= mixed >> np.uint64(33)
+        mixed = (mixed * np.uint64(0xC2B2AE3D27D4EB4F)) & mask
+        mixed ^= mixed >> np.uint64(29)
+        mixed = (mixed * np.uint64(0x165667B19E3779F9)) & mask
+        mixed ^= mixed >> np.uint64(32)
+        return np.bitwise_xor(mixed, np.uint64(self._noise_seed_base))
