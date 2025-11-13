@@ -7,7 +7,7 @@ from typing import Literal
 class TxConfig:
     """Transmitter operating parameters."""
 
-    fs: float = 20e6  # Sample rate in Hz
+    fs: float = 5e6  # Sample rate in Hz
     chunk_size: int = 5000  # Samples per generated chunk - match to DMA buffer size
     center_freq: float = 457e3  # Nominal beacon carrier frequency
     freq_tolerance: float = 100.0  # ± tolerance in Hz
@@ -45,7 +45,7 @@ class SimulationConfig:
     adc: AdcConfig = field(default_factory=AdcConfig)
     rx: RxConfig = field(default_factory=RxConfig)
 
-    duration: float = 0.0001  # Total simulation time in seconds
+    duration: float = 0.05  # Total simulation time in seconds
     plot_enabled: bool = True
     plot_stages: tuple[str, ...] = ("tx", "adc")  # ("tx", "adc", "rx")
     time_scale: float = 1e3

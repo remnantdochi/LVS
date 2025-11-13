@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from typing import Dict, Protocol, Sequence
 
 import numpy as np
@@ -105,7 +106,10 @@ class PyQtGraphObserver:
         self._window = QtWidgets.QMainWindow()
         self._window.setWindowTitle(window_title)
         self._build_ui()
+        self._active = False
         self._paused = False
+        self._resume_event = threading.Event()
+        self._restart_event = threading.Event()
         self._last_data: Dict[str, NDArray[np.float_]] = {}
         self._last_time: Dict[str, NDArray[np.float_]] = {}
 
@@ -128,14 +132,14 @@ class PyQtGraphObserver:
         self._toolbar = QtWidgets.QToolBar("Controls", parent=self._window)
         self._window.addToolBar(self._toolbar)
 
-        self._pause_action = self._toolbar.addAction("Pause")
-        self._pause_action.setCheckable(True)
-        self._pause_action.toggled.connect(self._toggle_pause)
+        self._play_pause_action = self._toolbar.addAction("Play")
+        self._play_pause_action.setCheckable(True)
+        self._play_pause_action.toggled.connect(self._toggle_play_pause)
 
         self._toolbar.addSeparator()
         self._toolbar.addAction("Clear", self._clear_plots)
 
-        self._status_label = QtWidgets.QLabel("Hover a plot to read time/value.")
+        self._status_label = QtWidgets.QLabel("Press Play to start streaming.")
         layout.addWidget(self._status_label)
 
         self._plot_container = pg.GraphicsLayoutWidget(show=False)
@@ -180,24 +184,92 @@ class PyQtGraphObserver:
     def _process_events(self) -> None:
         self._app.processEvents(self.QtCore.QEventLoop.AllEvents, 50)
 
+    def wait_for_play(self, poll_ms: int = 50) -> None:
+        """
+        Block the caller until the Play button is pressed or the window closes.
+        """
+        if self._resume_event.is_set():
+            return
+        self._wait_for_resume(poll_ms, "Observer closed before Play was pressed.")
+
+    def wait_if_paused(self, poll_ms: int = 50) -> None:
+        """
+        Block the caller while the observer is paused or inactive.
+        """
+        if self._resume_event.is_set():
+            return
+        self._wait_for_resume(poll_ms, "Observer closed while paused.")
+
+    def wait_for_restart_after_completion(self, poll_ms: int = 50) -> bool:
+        """
+        After a run completes, wait for Clear to be pressed or the window to close.
+
+        Returns True if a restart was requested, False if the window closed.
+        """
+        if self.consume_restart_request():
+            return True
+        while self._window.isVisible():
+            if self.consume_restart_request():
+                return True
+            self._process_events()
+            self.QtCore.QThread.msleep(poll_ms)
+        return False
+
+    def _wait_for_resume(self, poll_ms: int, closed_message: str) -> None:
+        while self._window.isVisible():
+            if self._resume_event.is_set():
+                return
+            self._process_events()
+            self.QtCore.QThread.msleep(poll_ms)
+        raise RuntimeError(closed_message)
+
     def _key_press(self, event):  # pragma: no cover - GUI callback
         if event.key() == self.QtCore.Qt.Key_Space:
-            self._pause_action.toggle()
+            if self._active:
+                self._play_pause_action.toggle()
         else:
             self.QtWidgets.QMainWindow.keyPressEvent(self._window, event)
 
-    def _toggle_pause(self, checked: bool) -> None:
-        self._paused = checked
-        state = "paused" if checked else "running"
-        self._status_label.setText(f"Streaming {state}. (Space toggles pause)")
+    def _toggle_play_pause(self, checked: bool) -> None:
+        if checked:
+            self._active = True
+            self._paused = False
+            self._resume_event.set()
+            self._play_pause_action.setText("Pause")
+            self._status_label.setText(
+                "Streaming running. Hover a plot for time/value (Space toggles pause)."
+            )
+        else:
+            if not self._active:
+                return
+            self._paused = True
+            self._resume_event.clear()
+            self._play_pause_action.setText("Play")
+            self._status_label.setText("Streaming paused. Press button or Space to resume.")
 
     def _clear_plots(self) -> None:
         for curve in self._curves.values():
             curve.setData([], [])
         self._last_data.clear()
         self._last_time.clear()
-        self._status_label.setText("Plots cleared.")
+        self._resume_event.clear()
+        self._restart_event.set()
+        self._active = False
+        self._paused = False
+        with self.QtCore.QSignalBlocker(self._play_pause_action):
+            self._play_pause_action.setChecked(False)
+            self._play_pause_action.setText("Play")
+        self._status_label.setText("Plots cleared. Press Play to restart.")
         self._process_events()
+
+    def consume_restart_request(self) -> bool:
+        """
+        Return True once when the user has requested a restart via Clear.
+        """
+        if self._restart_event.is_set():
+            self._restart_event.clear()
+            return True
+        return False
 
     def _time_unit(self) -> str:
         if self.time_scale == 1:
@@ -254,7 +326,7 @@ class PyQtGraphObserver:
         time: NDArray[np.float_],
         samples: NDArray[np.float_],
     ) -> None:
-        if self._paused:
+        if not self._active or self._paused:
             return
         curve = self._curves.get(key)
         if curve is None:

@@ -19,6 +19,10 @@ class LvsAdc:
         self._fs_subsample = float(getattr(config, "fs_subsample", 100e3))
         self._next_time: dict[float, float] = {}
 
+    def reset(self) -> None:
+        """Clear any accumulated sampling offsets."""
+        self._next_time.clear()
+
     def process_chunk(
         self,
         chunk: TxWaveformChunk,

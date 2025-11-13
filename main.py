@@ -36,25 +36,40 @@ class SimulationEngine:
         """Execute the simulation for the configured duration."""
         total_samples = int(math.ceil(self.config.duration * self.config.tx.fs))
         chunk_size = self.config.tx.chunk_size
-        remaining = total_samples
+        last_outputs: List[ReceiverOutputs] = []
 
-        outputs: List[ReceiverOutputs] = []
+        while True:
+            self._reset_chain()
+            remaining = total_samples
+            outputs: List[ReceiverOutputs] = []
+            restart_requested = False
 
-        while remaining > 0:
-            request = min(chunk_size, remaining)
-            tx_chunk = self.tx.generate_chunk(num_samples=request)
-            self._notify_tx(tx_chunk.plot_time, tx_chunk.plot_samples)
+            while remaining > 0:
+                self._wait_if_paused()
+                if self._restart_requested():
+                    restart_requested = True
+                    break
 
-            adc_time, adc_chunk = self.adc.process_chunk(tx_chunk)
-            self._notify_adc(adc_time, adc_chunk)
+                request = min(chunk_size, remaining)
+                tx_chunk = self.tx.generate_chunk(num_samples=request)
+                self._notify_tx(tx_chunk.plot_time, tx_chunk.plot_samples)
 
-            rx_outputs = self.rx.process_chunk(adc_time, adc_chunk)
-            self._notify_rx(rx_outputs)
+                adc_time, adc_chunk = self.adc.process_chunk(tx_chunk)
+                self._notify_adc(adc_time, adc_chunk)
 
-            outputs.append(rx_outputs)
-            remaining -= len(tx_chunk.plot_samples)
+                rx_outputs = self.rx.process_chunk(adc_time, adc_chunk)
+                self._notify_rx(rx_outputs)
 
-        return outputs
+                outputs.append(rx_outputs)
+                remaining -= len(tx_chunk.plot_samples)
+
+            if restart_requested:
+                continue
+
+            last_outputs = outputs
+
+            if not self._wait_for_restart_after_completion():
+                return last_outputs
 
     def _notify_tx(
         self,
@@ -75,6 +90,41 @@ class SimulationEngine:
     def _notify_rx(self, outputs: ReceiverOutputs) -> None:
         for obs in self.observers:
             obs.on_rx(outputs)
+
+    def _wait_if_paused(self) -> None:
+        for obs in self.observers:
+            wait_fn = getattr(obs, "wait_if_paused", None)
+            if callable(wait_fn):
+                wait_fn()
+
+    def _restart_requested(self) -> bool:
+        restart = False
+        for obs in self.observers:
+            consume_fn = getattr(obs, "consume_restart_request", None)
+            if callable(consume_fn) and consume_fn():
+                restart = True
+        return restart
+
+    def _wait_for_restart_after_completion(self) -> bool:
+        waited = False
+        for obs in self.observers:
+            wait_fn = getattr(obs, "wait_for_restart_after_completion", None)
+            if callable(wait_fn):
+                waited = True
+                if wait_fn():
+                    return True
+        return False if waited else False
+
+    def _reset_chain(self) -> None:
+        tx_reset = getattr(self.tx, "reset", None)
+        if callable(tx_reset):
+            tx_reset()
+        adc_reset = getattr(self.adc, "reset", None)
+        if callable(adc_reset):
+            adc_reset()
+        rx_reset = getattr(self.rx, "reset", None)
+        if callable(rx_reset):
+            rx_reset()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -149,7 +199,7 @@ def create_observers_from_config(config: SimulationConfig) -> List[Observer] | N
             show_adc="adc" in stages,
             show_rx="rx" in stages,
             time_scale=config.time_scale,
-            view_domain=config.view_domain,
+            #view_domain=config.view_domain,
         )
     except RuntimeError as exc:
         raise SystemExit(f"Unable to start PyQtGraph observer: {exc}") from exc
@@ -157,9 +207,19 @@ def create_observers_from_config(config: SimulationConfig) -> List[Observer] | N
     return [observer]
 
 
+def _wait_for_observers_to_start(observers: Sequence[Observer] | None) -> None:
+    if not observers:
+        return
+    for obs in observers:
+        wait_fn = getattr(obs, "wait_for_play", None)
+        if callable(wait_fn):
+            wait_fn()
+
+
 def run_simulation(args: argparse.Namespace) -> List[ReceiverOutputs]:
     config = set_config_from_arg(args)
     observers = create_observers_from_config(config)
+    _wait_for_observers_to_start(observers)
     engine = SimulationEngine(config=config, observers=observers)
     outputs = engine.run()
 

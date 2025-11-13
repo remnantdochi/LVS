@@ -24,6 +24,11 @@ class Receiver:
 
     def __init__(self, config: RxConfig) -> None:
         self.config = config
+        self._state: Dict[str, NDArray[np.float64]] = {}
+
+    def reset(self) -> None:
+        """Reset any accumulated receiver state."""
+        self._state.clear()
 
     def process_chunk(
         self,
