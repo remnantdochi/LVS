@@ -1,5 +1,6 @@
 """Configuration dataclasses for the LVS simulation pipeline."""
 from dataclasses import dataclass, field
+from typing import Literal
 
 
 @dataclass
@@ -24,11 +25,9 @@ class TxConfig:
 @dataclass
 class AdcConfig:
     """MCU ADC sampling parameters."""
-    gain: float = 1.0
-
     mode: str = "full"  # "full" or "subsample"
-    fs_full = float = 1.2e6
-    fs_subsample = float = 100e3  # TBD
+    fs_full: float = 1.2e6
+    fs_subsample: float = 100e3  # TBD
 
 
 @dataclass
