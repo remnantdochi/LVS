@@ -110,7 +110,7 @@ class PyQtGraphObserver:
         self._last_time: Dict[str, NDArray[np.float_]] = {}
 
         if not any((show_tx, show_adc, show_rx)):
-            self.show_rx = True
+            self.show_tx = True
 
         self._window.show()
         self._process_events()
@@ -135,10 +135,6 @@ class PyQtGraphObserver:
         self._toolbar.addSeparator()
         self._toolbar.addAction("Clear", self._clear_plots)
 
-        self._toolbar.addSeparator()
-        self._toolbar.addAction("Measure TX Period", lambda: self._measure_period("tx"))
-        self._toolbar.addAction("Measure ADC Period", lambda: self._measure_period("adc"))
-
         self._status_label = QtWidgets.QLabel("Hover a plot to read time/value.")
         layout.addWidget(self._status_label)
 
@@ -158,8 +154,6 @@ class PyQtGraphObserver:
             keys = (*keys, "adc")
         if self.show_rx:
             keys = (*keys, "rx")
-        if not keys:
-            keys = ("rx",)
 
         for idx, key in enumerate(keys):
             plot = self._plot_container.addPlot(title=key.upper())
@@ -276,36 +270,6 @@ class PyQtGraphObserver:
         self._last_data[key] = samples
         self._process_events()
 
-    def _measure_period(self, key: str, level: float = 0.0):
-        import numpy as np
-        time = self._last_time.get(key)
-        data = self._last_data.get(key)
-        if time is None or data is None:
-            self._status_label.setText(f"No {key.upper()} data to measure.")
-            return
-
-        sign_changes = np.where(np.diff(np.signbit(data - level)))[0]
-        if len(sign_changes) < 2:
-            self._status_label.setText(f"{key.upper()}: Not enough level crossings.")
-            return
-
-        # Compute precise crossing times by linear interpolation
-        t_cross = []
-        for i in sign_changes:
-            t1, t2 = time[i], time[i + 1]
-            y1, y2 = data[i], data[i + 1]
-            if y2 == y1:
-                continue
-            t_cross.append(t1 + (level - y1) * (t2 - t1) / (y2 - y1))
-
-        if len(t_cross) < 2:
-            self._status_label.setText(f"{key.upper()}: Not enough crossings for measurement.")
-            return
-
-        diffs = np.diff(t_cross)
-        avg = np.mean(diffs)
-        freq = 1.0 / (2 * avg) if avg > 0 else 0.0
-        self._status_label.setText(f"{key.upper()} mean Δt={avg*1e6:.3f} µs  ({freq:.1f} Hz)")
 
     # region Lifecycle ----------------------------------------------------
     def exec(self) -> None:
