@@ -108,6 +108,9 @@ class PyQtGraphObserver:
         else:
             self._owns_app = False
 
+        self._last_data: Dict[str, NDArray[np.float_]] = {}
+        self._last_time: Dict[str, NDArray[np.float_]] = {}
+        self._peak_labels: Dict[str, "pyqtgraph.TextItem"] = {}
         self._window = QtWidgets.QMainWindow()
         self._window.setWindowTitle(window_title)
         self._build_ui()
@@ -115,8 +118,6 @@ class PyQtGraphObserver:
         self._paused = False
         self._resume_event = threading.Event()
         self._restart_event = threading.Event()
-        self._last_data: Dict[str, NDArray[np.float_]] = {}
-        self._last_time: Dict[str, NDArray[np.float_]] = {}
 
         if not any((show_tx, show_adc, show_rx)):
             self.show_tx = True
@@ -181,6 +182,10 @@ class PyQtGraphObserver:
             curve = plot.plot([], [], pen=pg.mkPen(width=1.2), symbol="o", symbolSize=3)
             self._plots[key] = plot
             self._curves[key] = curve
+            label = pg.TextItem(color=(255, 180, 0), anchor=(0, 1))
+            label.setVisible(False)
+            plot.addItem(label)
+            self._peak_labels[key] = label
             if idx < len(keys) - 1:
                 self._plot_container.nextRow()
 
@@ -366,6 +371,7 @@ class PyQtGraphObserver:
             y_vals = y_vals[idx]
 
         curve.setData(x_vals, y_vals)
+        self._update_peak_label(key, x_vals, y_vals)
         return True
 
     def _set_view_domain(self, domain: Literal["time", "frequency"]) -> None:
@@ -378,6 +384,7 @@ class PyQtGraphObserver:
             self._view_action.blockSignals(False)
         self._update_axis_labels()
         self._apply_x_range_limits()
+        self._update_peak_visibility()
         self._replot_all_cached()
 
     def _update_axis_labels(self) -> None:
@@ -453,6 +460,30 @@ class PyQtGraphObserver:
             return f"{key.upper()}  f={x_val:.1f}Hz  |X|={y_val:.3f}"
         time_value = x_val / self.time_scale
         return f"{key.upper()}  t={time_value:.6f}s  value={y_val:.6f}"
+
+    def _update_peak_label(
+        self,
+        key: str,
+        x_vals: NDArray[np.float_],
+        y_vals: NDArray[np.float_],
+    ) -> None:
+        label = self._peak_labels.get(key)
+        if label is None:
+            return
+        if self.view_domain != "frequency" or len(x_vals) == 0:
+            label.setVisible(False)
+            return
+        idx = int(np.argmax(y_vals))
+        freq = float(x_vals[idx])
+        mag = float(y_vals[idx])
+        label.setVisible(True)
+        label.setText(f"peak {freq:,.0f} Hz")
+        label.setPos(freq, mag)
+
+    def _update_peak_visibility(self) -> None:
+        if self.view_domain != "frequency":
+            for label in self._peak_labels.values():
+                label.setVisible(False)
 
     # region Lifecycle ----------------------------------------------------
     def exec(self) -> None:

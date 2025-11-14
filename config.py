@@ -25,8 +25,8 @@ class TxConfig:
 @dataclass
 class AdcConfig:
     """MCU ADC sampling parameters."""
-    mode: str = "full"  # "full" or "subsample"
-    fs_full: float = 1.2e6
+    mode: str = "subsample"  # "full" or "subsample"
+    fs_full: float = 1e6
     fs_subsample: float = 100e3  # TBD
 
 
@@ -47,5 +47,5 @@ class SimulationConfig:
 
     duration: float = 0.05  # Total simulation time in seconds
     plot_enabled: bool = True
-    plot_stages: tuple[str, ...] = ("tx", "adc")  # ("tx", "adc", "rx")
+    plot_stages: tuple[str, ...] = ("tx", "adc", "rx")  # ("tx", "adc", "rx")
     time_scale: float = 1e3
