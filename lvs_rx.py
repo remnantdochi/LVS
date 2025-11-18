@@ -54,7 +54,7 @@ class Receiver:
                 processed=np.empty(0, dtype=np.float64),
             )
 
-        baseband = self._mix_stage(samples, time)
+        baseband = self._mix_stage(time, samples)
         if self.config.pipeline_idx <= 0:
             processed = baseband.real.astype(np.float64, copy=False)
             return ReceiverOutputs(time=time, processed=processed)
@@ -70,8 +70,8 @@ class Receiver:
 
     def _mix_stage(
         self,
-        samples: NDArray[np.float64],
         time: NDArray[np.float64],
+        samples: NDArray[np.float64],
     ) -> NDArray[np.complex128]:
         """Generate the NCO, mix the input to baseband, and return complex baseband."""
         sample_rate = self._estimate_sample_rate(time)
