@@ -29,7 +29,7 @@ class SimulationEngine:
         self.config = config
         self.tx = Transmitter(config.tx)
         self.adc = LvsAdc(config.adc)
-        self.rx = Receiver(config.rx)
+        self.rx = Receiver(config.rx, mode =config.adc.mode)
         self.observers: List[Observer] = list(observers) if observers else [NullObserver()]
 
     def run(self) -> List[ReceiverOutputs]:
