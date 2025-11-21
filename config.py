@@ -39,10 +39,12 @@ class RxConfig:
     cic_stages: int = 3
     cic_decimation_full: int = 16
     cic_decimation_subsample: int = 1
-    fir_taps_num: int = 127
+    fir_taps: int = 127
+    fir_cutoff_hz: float = 20e3
+    fir_sample_rate_hz: float = 62500.0
     fir_decimation_full: int = 6
     fir_decimation_subsample: int = 1
-    fir_taps: tuple[float, ...] = (
+    fir_coefficients: tuple[float, ...] = (
         0.0000000000,
         -0.0000026943,
         -0.0000016250,

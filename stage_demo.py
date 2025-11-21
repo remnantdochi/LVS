@@ -251,12 +251,12 @@ def plot_fir_response() -> None:
     # White noise input
     x = np.random.normal(0.0, 1.0, size=time.shape)
 
-    # --- (A) Decimation 없는 FIR filtering ---
-    h = rx._fir_taps
+    # --- (A) Without Decimation FIR filtering ---
+    h = rx._fir_coefficients
     fir_no_dec = np.convolve(x, h, mode="same")
     fir_time_no_dec = time
 
-    # --- (B) Decimation 포함된 기존 FIR stage ---
+    # --- (B) With Decimation FIR stage ---
     fir_dec, fir_time_dec = rx._fir_stage(time, x)
 
     # --- FFT for both ---

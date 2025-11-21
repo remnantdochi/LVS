@@ -30,7 +30,7 @@ class Receiver:
         self._cic_stages = config.cic_stages
         self._cic_decimation = config.cic_decimation_full if mode == "full" else config.cic_decimation_subsample
 
-        self._fir_taps = self._init_fir_taps(config)
+        self._fir_coefficients = self._init_fir_coefficients(config)
         self._fir_decimation = config.fir_decimation_full if mode == "full" else 1
 
         self._reset_cic_state()
@@ -82,22 +82,6 @@ class Receiver:
         nco = self._generate_nco(len(samples), sample_rate)
         return samples.astype(np.complex128, copy=False) * nco
 
-    def _estimate_sample_rate(self, time: NDArray[np.float64]) -> Optional[float]:
-        """Estimate the sampling rate from incoming time stamps."""
-        if time.size < 2:
-            return None
-
-        deltas = np.diff(time)
-        positive = deltas[deltas > 0.0]
-        if positive.size == 0:
-            return None
-
-        mean_dt = float(np.mean(positive))
-        if mean_dt <= 0.0:
-            return None
-
-        return 1.0 / mean_dt
-
     def _cic_stage(
         self,
         time: NDArray[np.float64],
@@ -142,9 +126,9 @@ class Receiver:
         time: NDArray[np.float64],
         samples: NDArray[np.complex128],
     ) -> tuple[NDArray[np.complex128], NDArray[np.float64]]:
-        """Apply an FIR filter (optional decimation) with stateful overlap."""
+        """Apply an FIR filter (+ decimation) with stateful overlap."""
 
-        taps = self._fir_taps
+        taps = self._fir_coefficients
         if taps.size == 0:
             return samples, time
 
@@ -178,7 +162,32 @@ class Receiver:
         time_out = time[mask] + delay_offset
 
         return filtered, time_out
+    
+    def _iir_stage(
+        self,
+        time: NDArray[np.float64],
+        samples: NDArray[np.complex128],
+    ) -> tuple[NDArray[np.complex128], NDArray[np.float64]]:
+        """Apply an IIR filter (optional decimation) with stateful overlap."""
+        # Placeholder for IIR implementation
+        return samples, time
 
+    def _estimate_sample_rate(self, time: NDArray[np.float64]) -> Optional[float]:
+        """Estimate the sampling rate from incoming time stamps."""
+        if time.size < 2:
+            return None
+
+        deltas = np.diff(time)
+        positive = deltas[deltas > 0.0]
+        if positive.size == 0:
+            return None
+
+        mean_dt = float(np.mean(positive))
+        if mean_dt <= 0.0:
+            return None
+
+        return 1.0 / mean_dt
+    
     def _generate_nco(self, num_samples: int, sample_rate: float) -> NDArray[np.complex128]:
         """Produce a complex exponential for the configured carrier frequency."""
         if num_samples <= 0:
@@ -223,16 +232,16 @@ class Receiver:
 
     def _reset_fir_state(self) -> None:
         """Initialize FIR overlap buffer."""
-        taps_len = int(self._fir_taps.size)
+        taps_len = int(self._fir_coefficients.size)
         if taps_len > 1:
             self._fir_state = np.zeros(taps_len - 1, dtype=np.complex128)
         else:
             self._fir_state = np.empty(0, dtype=np.complex128)
         self._fir_phase = 0
 
-    def _init_fir_taps(self, config: RxConfig) -> NDArray[np.float64]:
+    def _init_fir_coefficients(self, config: RxConfig) -> NDArray[np.float64]:
         """Return FIR taps from config or a simple placeholder."""
-        taps = np.asarray(getattr(config, "fir_taps", (1.0,)), dtype=np.float64)
+        taps = np.asarray(getattr(config, "fir_coefficients", (1.0,)), dtype=np.float64)
         if taps.size == 0:
             return np.asarray([1.0], dtype=np.float64)
         return taps

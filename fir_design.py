@@ -1,11 +1,12 @@
 from __future__ import annotations
 import numpy as np
 from scipy.signal import firwin
+from config import RxConfig
 
 def design_lowpass(
-    num_taps: int = 127,
-    cutoff_hz: float = 20e3,
-    sample_rate_hz: float = 62500.0,
+    num_taps: int = RxConfig.fir_taps,
+    cutoff_hz: float = RxConfig.fir_cutoff_hz,
+    sample_rate_hz: float = RxConfig.fir_sample_rate_hz,
     window: str = "hann",
 ) -> np.ndarray:
 
