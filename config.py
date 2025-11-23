@@ -35,10 +35,13 @@ class RxConfig:
     """Receiver DSP parameters."""
 
     carrier_freq: float = 457e3
-    pipeline_idx: int = 1 #[0 - nco mixer, 1 - cic filter, 2 - fir filter]
+    pipeline_idx: int = 1 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter]
+    filter_type: Literal["fir", "iir"] = "fir"
+    
     cic_stages: int = 3
     cic_decimation_full: int = 16
     cic_decimation_subsample: int = 1
+
     fir_taps: int = 127
     fir_cutoff_hz: float = 20e3
     fir_sample_rate_hz: float = 62500.0
@@ -172,7 +175,22 @@ class RxConfig:
         -0.0000016250,
         -0.0000026943,
         0.0000000000,
-)
+    )
+    iir_order: int = 2
+    iir_cutoff_hz: float = 20e3
+    iir_sample_rate_hz: float = 62500.0
+    iir_b_coefficients: tuple[float, ...] = (
+        0.4347393483,
+        0.8694786966,
+        0.4347393483,
+    )
+    iir_a_coefficients: tuple[float, ...] = (
+        1.0000000000,
+        0.5193034092,
+        0.2196539839,
+    )
+    iir_decimation_full: int = 6
+    iir_decimation_subsample: int = 1
 
 
 

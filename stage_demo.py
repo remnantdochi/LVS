@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
+from scipy.signal import CZT as ScipyCZT
 
 from config import RxConfig
 from lvs_rx import Receiver
@@ -296,6 +297,215 @@ def plot_fir_response() -> None:
     plt.tight_layout()
     plt.show()
 
+def plot_iir_example() -> None:
+    cfg = RxConfig()
+    cfg.pipeline_idx = 2
+    rx = Receiver(cfg, mode="full")
+
+    fs = 1e6
+    duration = 20e-3
+    time = np.arange(0.0, duration, 1.0 / fs)
+
+    rf_offset = 2e3
+    rf_freq = cfg.carrier_freq + rf_offset
+    rf_samples = np.cos(2 * np.pi * rf_freq * time)
+    rf_samples += np.random.normal(0, 0.1, size=rf_samples.shape)
+
+    chunk_size = 5000
+    mixed_parts, mixed_time = [], []
+    cic_parts, cic_time = [], []
+    iir_parts, iir_time = [], []
+
+    # === Chunk-by-chunk processing ===
+    for start in range(0, rf_samples.size, chunk_size):
+        stop = min(start + chunk_size, rf_samples.size)
+        chunk = rf_samples[start:stop]
+        t_chunk = time[start:stop]
+        mixed = rx._mix_stage(t_chunk, chunk)
+        mixed_parts.append(mixed)
+        mixed_time.append(t_chunk)
+        cic_out, cic_t = rx._cic_stage(t_chunk, mixed)
+        cic_parts.append(cic_out)
+        cic_time.append(cic_t)
+        iir_out, iir_t = rx._iir_stage(cic_t, cic_out)
+        iir_parts.append(iir_out)
+        iir_time.append(iir_t)
+
+
+    mixed_all = np.concatenate(mixed_parts)
+    mixed_time_all = np.concatenate(mixed_time)
+    cic_all = np.concatenate(cic_parts)
+    cic_time_all = np.concatenate(cic_time)
+    iir_all = np.concatenate(iir_parts)
+    iir_time_all = np.concatenate(iir_time)
+
+    _plot_complex_spectrum(iir_all, iir_time_all, title="IIR Stage Spectrum", input_data=cic_all, input_time=cic_time_all)
+    plt.show()
+
+def plot_iir_response() -> None:
+    """
+    Visualize IIR filter behaviour:
+    (A) Theoretical IIR frequency response
+    (B) IIR output without decimation
+    (C) IIR output with decimation (actual RX stage)
+    """
+    cfg = RxConfig()
+    cfg.pipeline_idx = 1      # IIR stage index (depends on your pipeline)
+    rx = Receiver(cfg, mode="full")
+
+    fs = 62500  # IIR input rate in RX pipeline
+    duration = 0.02
+    time = np.arange(0.0, duration, 1.0 / fs, dtype=np.float64)
+
+    # White noise input → shows full frequency response
+    x = np.random.normal(0.0, 1.0, size=time.shape)
+
+    # --- (A) Theoretical IIR Frequency Response ---
+    b = rx._iir_b_coefficients
+    a = rx._iir_a_coefficients
+    order = rx._iir_order
+
+    N_fft = 4096
+    # zero-pad numerator & denominator to same length
+    b_pad = np.zeros(order + 1)
+    a_pad = np.zeros(order + 1)
+    b_pad[:len(b)] = b
+    a_pad[:len(a)] = a
+
+    H = np.fft.fftshift(np.fft.fft(b_pad, N_fft) / np.fft.fft(a_pad, N_fft))
+    fH = np.fft.fftshift(np.fft.fftfreq(N_fft, 1/fs))
+
+    # --- (B) IIR filtering WITHOUT decimation (manual DF2T loop) ---
+    # replicate algorithm in _iir_stage
+    z = np.zeros(order, dtype=np.complex128)
+    y_no_dec = np.zeros_like(x, dtype=np.complex128)
+
+    for idx, sample in enumerate(x):
+        acc = b_pad[0] * sample + (z[0] if order > 0 else 0)
+        y_no_dec[idx] = acc
+
+        if order > 0:
+            for s in range(order - 1):
+                z[s] = z[s + 1] + b_pad[s + 1] * sample - a_pad[s + 1] * acc
+            z[order - 1] = b_pad[order] * sample - a_pad[order] * acc
+
+    # FFT (no decimation)
+    Y_no_dec = np.fft.fftshift(np.fft.fft(y_no_dec))
+    f_no_dec = np.fft.fftshift(np.fft.fftfreq(y_no_dec.size, 1/fs))
+
+    # --- (C) Actual IIR stage WITH decimation ---
+    rx.reset()
+    y_dec, t_dec = rx._iir_stage(time, x)
+    fs_dec = 1.0 / np.mean(np.diff(t_dec))
+
+    Y_dec = np.fft.fftshift(np.fft.fft(y_dec))
+    f_dec = np.fft.fftshift(np.fft.fftfreq(y_dec.size, 1/fs_dec))
+
+    # --- Plot ---
+    fig, (axH, axA, axB) = plt.subplots(3, 1, figsize=(12, 10))
+
+    # (0) Theoretical IIR response
+    axH.plot(fH/1e3, 20*np.log10(np.abs(H)+1e-12), color="purple")
+    axH.set_title("Theoretical IIR Frequency Response")
+    axH.set_xlim(-fs/2/1e3, fs/2/1e3)
+    axH.grid(True)
+
+    # (1) No-decimation IIR output
+    axA.plot(f_no_dec/1e3, 20*np.log10(np.abs(Y_no_dec)+1e-12), color="orange")
+    axA.set_title("IIR Output (No Decimation)")
+    axA.grid(True)
+    axA.set_xlim(-fs/2/1e3, fs/2/1e3)
+
+    # (2) Decimated IIR output
+    axB.plot(f_dec/1e3, 20*np.log10(np.abs(Y_dec)+1e-12), color="blue")
+    axB.set_title(f"IIR Output (After Decimation, fs_out={fs_dec:.1f} Hz)")
+    axB.grid(True)
+    axB.set_xlim(-fs/2/1e3, fs/2/1e3)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_czt_example() -> None:
+    """Quick demo for visualizing the CZT output."""
+    fs = 1e6
+    duration = 20e-3
+    time = np.arange(0.0, duration, 1.0 / fs, dtype=np.float64)
+
+    rf_offset = 2e3
+    rf_freq = 457e3 + rf_offset
+    rf_samples = np.cos(2.0 * np.pi * rf_freq * time)
+    noise_std = 0.1
+    rf_samples += np.random.normal(0, noise_std, size=rf_samples.shape)
+
+    # Define zoom band
+    f_start = 447e3
+    f_end   = 467e3
+    M = 4096
+
+    # Compute A and W for the CZT
+    W = np.exp(-1j * 2 * np.pi * (f_end - f_start) / (M * fs)) # the ratio between points in each step
+    A = np.exp(1j * 2 * np.pi * f_start / fs) # the starting point
+
+    # SciPy CZT
+    transformer = ScipyCZT(n=len(rf_samples), m=M, w=W, a=A)
+    spec = transformer(rf_samples)
+    #spec = _czt_fft(rf_samples, m=M, w=W, a=A) # Custom CZT implementation
+    freqs = np.linspace(f_start, f_end, M)
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(freqs / 1e3, 20 * np.log10(np.abs(spec) + 1e-12))
+    plt.title("CZT (SciPy) Zoom Spectrum")
+    plt.xlabel("Frequency (kHz)")
+    plt.ylabel("Magnitude (dB)")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+def _czt_fft(x, m=None, w=None, a=1.0 + 0j):
+    """Compute the Chirp Z-Transform (CZT) of a 1D array x.
+    """
+    x = np.asarray(x, dtype=np.complex128)
+    n = x.shape[0]
+
+    if m is None:
+        m = n
+    if w is None:
+        w = np.exp(-1j * 2.0 * np.pi / m)
+
+    # Indices as float for exponent arithmetic
+    n_idx = np.arange(n, dtype=np.float64)
+    m_idx = np.arange(m, dtype=np.float64)
+
+    # Step 1: Pre-multiply input by chirps
+    # y[n] = x[n] * a^{-n} * w^{n^2 / 2}
+    y = x * (a ** (-n_idx)) * (w ** (n_idx * n_idx / 2.0))
+
+    # Step 2: Build convolution kernel v[k] = w^{-k^2 / 2}
+    # and wrap it so that linear convolution is implemented via FFT.
+    L = int(2 ** np.ceil(np.log2(n + m - 1)))
+    v = np.zeros(L, dtype=np.complex128)
+
+    # First part: k = 0 .. m-1
+    v[:m] = w ** (-m_idx * m_idx / 2.0)
+
+    # Tail part: k = -(n-1) .. -1 mapped to indices L-(n-1) .. L-1
+    if n > 1:
+        tail_idx = np.arange(1, n, dtype=np.float64)
+        v[L - (n - 1):] = w ** (-tail_idx[::-1] * tail_idx[::-1] / 2.0)
+
+    # Step 3: FFT-based convolution
+    Y = np.fft.fft(y, L)
+    V = np.fft.fft(v, L)
+    G = Y * V
+    g = np.fft.ifft(G, L)
+
+    # Step 4: Take first m outputs and apply final chirp
+    k_idx = np.arange(m, dtype=np.float64)
+    X = g[:m] * (w ** (k_idx * k_idx / 2.0))
+
+    return X
+
+
 def _plot_time_domain(data: np.ndarray, data_time: np.ndarray, title: str, input_data: np.ndarray, input_time: np.ndarray) -> None:
     """Plot time-domain waveform of a complex baseband signal."""
     if data.size == 0:
@@ -385,9 +595,14 @@ def _plot_complex_spectrum(data: np.ndarray, data_time: np.ndarray, title: str, 
 
     plt.show(block=False)
 
+
+
 if __name__ == "__main__":
     #plot_mix_example()
     #plot_cic_example()
     #plot_cic_interactive()
-    #plot_fir_example()
-    plot_fir_response()
+    plot_fir_example()
+    #plot_fir_response()
+    plot_iir_example()
+    #plot_iir_response()
+    #plot_czt_example()

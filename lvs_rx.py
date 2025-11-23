@@ -25,6 +25,10 @@ class Receiver:
         self.config = config
         self._mode = mode
 
+        self._filter_type = getattr(config, "filter_type", "fir").lower()
+        if self._filter_type not in {"fir", "iir"}:
+            raise ValueError(f"Unsupported filter_type '{self._filter_type}'")
+
         self._nco_phase: float = 0.0
 
         self._cic_stages = config.cic_stages
@@ -32,15 +36,25 @@ class Receiver:
 
         self._fir_coefficients = self._init_fir_coefficients(config)
         self._fir_decimation = config.fir_decimation_full if mode == "full" else 1
+        (
+            self._iir_b_coefficients,
+            self._iir_a_coefficients,
+        ) = self._init_iir_coefficients(config)
+        self._iir_decimation = (
+            config.iir_decimation_full if mode == "full" else config.iir_decimation_subsample
+        )
+        self._init_iir_buffers()
 
         self._reset_cic_state()
         self._reset_fir_state()
+        self._reset_iir_state()
 
     def reset(self) -> None:
         """Reset any accumulated receiver state."""
         self._nco_phase = 0.0
         self._reset_cic_state()
         self._reset_fir_state()
+        self._reset_iir_state()
 
     def process_chunk(
         self,
@@ -64,9 +78,10 @@ class Receiver:
             processed = cic_complex.real.astype(np.float64, copy=False)
             return ReceiverOutputs(time=cic_time, processed=processed)
 
-        fir_complex, fir_time = self._fir_stage(cic_time, cic_complex)
-        processed = fir_complex.real.astype(np.float64, copy=False)
-        return ReceiverOutputs(time=fir_time, processed=processed)
+        filter_stage = self._iir_stage if self._filter_type == "iir" else self._fir_stage
+        filt_complex, filt_time = filter_stage(cic_time, cic_complex)
+        processed = filt_complex.real.astype(np.float64, copy=False)
+        return ReceiverOutputs(time=filt_time, processed=processed)
 
     def _mix_stage(
         self,
@@ -168,9 +183,41 @@ class Receiver:
         time: NDArray[np.float64],
         samples: NDArray[np.complex128],
     ) -> tuple[NDArray[np.complex128], NDArray[np.float64]]:
-        """Apply an IIR filter (optional decimation) with stateful overlap."""
-        # Placeholder for IIR implementation
-        return samples, time
+        """Apply an IIR (biquad-style) filter with optional decimation."""
+        if samples.size == 0:
+            return samples, np.empty(0, dtype=np.float64)
+
+        order = self._iir_order
+        b = self._iir_b_padded
+        a = self._iir_a_padded
+        data = samples.astype(np.complex128, copy=False)
+
+        if order == 0:
+            filtered = data * b[0]
+        else:
+            filtered = np.empty_like(data, dtype=np.complex128)
+            z = self._iir_state.copy()
+            for idx, sample in enumerate(data):
+                acc = b[0] * sample + z[0]
+                filtered[idx] = acc
+                for state_idx in range(order - 1):
+                    z[state_idx] = z[state_idx + 1] + b[state_idx + 1] * sample - a[state_idx + 1] * acc
+                z[order - 1] = b[order] * sample - a[order] * acc
+            self._iir_state = z
+
+        decim = max(1, int(self._iir_decimation))
+        if decim > 1:
+            filtered, mask = self._decimate_with_phase(filtered, decim, phase_attr="_iir_phase")
+        else:
+            mask = np.ones(filtered.size, dtype=bool)
+
+        if filtered.size == 0:
+            return filtered, np.empty(0, dtype=np.float64)
+
+        if mask.size != time.size:
+            raise RuntimeError("IIR decimation mask size does not match time array size")
+
+        return filtered, time[mask]
 
     def _estimate_sample_rate(self, time: NDArray[np.float64]) -> Optional[float]:
         """Estimate the sampling rate from incoming time stamps."""
@@ -238,6 +285,14 @@ class Receiver:
         else:
             self._fir_state = np.empty(0, dtype=np.complex128)
         self._fir_phase = 0
+    
+    def _reset_iir_state(self) -> None:
+        """Initialize IIR filter state memory."""
+        if getattr(self, "_iir_order", 0) > 0:
+            self._iir_state = np.zeros(self._iir_order, dtype=np.complex128)
+        else:
+            self._iir_state = np.empty(0, dtype=np.complex128)
+        self._iir_phase = 0
 
     def _init_fir_coefficients(self, config: RxConfig) -> NDArray[np.float64]:
         """Return FIR taps from config or a simple placeholder."""
@@ -245,6 +300,30 @@ class Receiver:
         if taps.size == 0:
             return np.asarray([1.0], dtype=np.float64)
         return taps
+    
+    def _init_iir_coefficients(self, config: RxConfig) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Return normalized IIR numerator/denominator coefficients."""
+        b = np.asarray(getattr(config, "iir_b_coefficients", (1.0,)), dtype=np.float64)
+        a = np.asarray(getattr(config, "iir_a_coefficients", (1.0,)), dtype=np.float64)
+        if b.size == 0:
+            b = np.asarray([1.0], dtype=np.float64)
+        if a.size == 0:
+            a = np.asarray([1.0], dtype=np.float64)
+        if a[0] == 0.0:
+            raise ValueError("IIR denominator a[0] may not be zero")
+        b_norm = b / a[0]
+        a_norm = a / a[0]
+        return b_norm, a_norm
+
+    def _init_iir_buffers(self) -> None:
+        """Prepare padded coefficient arrays for the IIR stage."""
+        order = max(int(self._iir_a_coefficients.size), int(self._iir_b_coefficients.size)) - 1
+        self._iir_order = max(order, 0)
+        padded_len = self._iir_order + 1
+        self._iir_b_padded = np.zeros(padded_len, dtype=np.float64)
+        self._iir_b_padded[: self._iir_b_coefficients.size] = self._iir_b_coefficients
+        self._iir_a_padded = np.zeros(padded_len, dtype=np.float64)
+        self._iir_a_padded[: self._iir_a_coefficients.size] = self._iir_a_coefficients
 
     def _estimate_time_step(self, time: NDArray[np.float64]) -> Optional[float]:
         """Return mean positive time step if available, else None."""
