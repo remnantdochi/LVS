@@ -16,6 +16,10 @@ class ReceiverOutputs:
 
     time: NDArray[np.float64]
     processed: NDArray[np.float64]
+    fft_freqs: Optional[NDArray[np.float64]] = None
+    fft_magnitude: Optional[NDArray[np.float64]] = None
+    detection_hz: Optional[list[float]] = None
+    detection_mag: Optional[list[float]] = None
 
 
 class Receiver:
@@ -44,6 +48,7 @@ class Receiver:
             config.iir_decimation_full if mode == "full" else config.iir_decimation_subsample
         )
         self._init_iir_buffers()
+        self._fft_size = config.fft_size_full if mode == "full" else config.fft_size_subsample
 
         self._reset_cic_state()
         self._reset_fir_state()
@@ -80,8 +85,19 @@ class Receiver:
 
         filter_stage = self._iir_stage if self._filter_type == "iir" else self._fir_stage
         filt_complex, filt_time = filter_stage(cic_time, cic_complex)
-        processed = filt_complex.real.astype(np.float64, copy=False)
-        return ReceiverOutputs(time=filt_time, processed=processed)
+        if self.config.pipeline_idx == 2:
+            processed = filt_complex.real.astype(np.float64, copy=False)
+            return ReceiverOutputs(time=filt_time, processed=processed)
+
+        fft_freqs, fft_mag, detections, tracked = self._fft_stage(filt_time, filt_complex)
+        return ReceiverOutputs(
+            time=filt_time,
+            processed=processed,
+            fft_freqs=fft_freqs,
+            fft_magnitude=fft_mag,
+            detection_hz=detections,
+            detection_mag=tracked,
+        )
 
     def _mix_stage(
         self,
@@ -218,6 +234,47 @@ class Receiver:
             raise RuntimeError("IIR decimation mask size does not match time array size")
 
         return filtered, time[mask]
+
+    def _fft_stage(
+        self,
+        time: NDArray[np.float64],
+        samples: NDArray[np.complex128],
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], Optional[float], Optional[float]]:
+        """
+        Compute a windowed FFT over the chunk, detect peaks above a dynamic threshold,
+        and return the strongest detection.
+        """
+        if samples.size == 0 or time.size == 0:
+            return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64), None, None
+
+        sample_rate = self._estimate_sample_rate(time)
+        if sample_rate is None or sample_rate <= 0.0:
+            return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64), None, None
+        
+        nfft = self._fft_size
+        threshold_db = float(getattr(self.config, "fft_threshold_db", 8.0))
+        min_mag = float(getattr(self.config, "fft_min_magnitude", 1e-9))
+
+        data = samples.astype(np.complex128, copy=False)
+        if data.size < nfft:
+            pad = np.zeros(nfft - data.size, dtype=np.complex128)
+            data = np.concatenate((data, pad))
+        else:
+            data = data[:nfft]
+
+        window = np.hanning(nfft)
+        spectrum = np.fft.rfft(data * window, n=nfft)
+        magnitude = np.abs(spectrum)
+        freqs = np.fft.rfftfreq(nfft, d=1.0 / sample_rate)
+
+        noise_floor = float(np.median(magnitude) + min_mag)
+        threshold = noise_floor * (10.0 ** (threshold_db / 20.0))
+
+        peak_idx = int(np.argmax(magnitude)) if magnitude.size else -1
+        if peak_idx < 0 or magnitude[peak_idx] < threshold:
+            return freqs, magnitude, None, None
+
+        return freqs, magnitude, float(freqs[peak_idx]), float(magnitude[peak_idx])
 
     def _estimate_sample_rate(self, time: NDArray[np.float64]) -> Optional[float]:
         """Estimate the sampling rate from incoming time stamps."""

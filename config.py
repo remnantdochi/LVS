@@ -35,7 +35,7 @@ class RxConfig:
     """Receiver DSP parameters."""
 
     carrier_freq: float = 457e3
-    pipeline_idx: int = 1 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter]
+    pipeline_idx: int = 1 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter, 3- fft detection]
     filter_type: Literal["fir", "iir"] = "fir"
     
     cic_stages: int = 3
@@ -191,6 +191,11 @@ class RxConfig:
     )
     iir_decimation_full: int = 6
     iir_decimation_subsample: int = 1
+
+    fft_size_full: int = 1024
+    fft_size_subsample: int = 256
+    fft_threshold_db: float = 8
+    fft_min_magnitude: float = 1e-9
 
 
 
