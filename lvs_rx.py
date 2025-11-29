@@ -20,6 +20,7 @@ class ReceiverOutputs:
     fft_magnitude: Optional[NDArray[np.float64]] = None
     detection_hz: Optional[float] = None
     detection_mag: Optional[float] = None
+    snr_db: Optional[float] = None
 
 
 class Receiver:
@@ -90,7 +91,7 @@ class Receiver:
             processed = filt_complex.real.astype(np.float64, copy=False)
             return ReceiverOutputs(time=filt_time, processed=processed)
 
-        fft_freqs, fft_mag, detection_hz, detection_mag = self._fft_stage(filt_time, filt_complex)
+        fft_freqs, fft_mag, detection_hz, detection_mag, snr_db = self._fft_stage(filt_time, filt_complex)
         processed = filt_complex.real.astype(np.float64, copy=False)
         return ReceiverOutputs(
             time=filt_time,
@@ -99,6 +100,7 @@ class Receiver:
             fft_magnitude=fft_mag,
             detection_hz=detection_hz,
             detection_mag=detection_mag,
+            snr_db=snr_db,
         )
 
     def _mix_stage(
@@ -241,17 +243,35 @@ class Receiver:
         self,
         time: NDArray[np.float64],
         samples: NDArray[np.complex128],
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64], Optional[float], Optional[float]]:
+    ) -> tuple[
+        NDArray[np.float64],
+        NDArray[np.float64],
+        Optional[float],
+        Optional[float],
+        Optional[float],
+    ]:
         """
         Compute a windowed FFT over the chunk, detect peaks above a dynamic threshold,
         and return the strongest detection.
         """
         if samples.size == 0 or time.size == 0:
-            return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64), None, None
+            return (
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64),
+                None,
+                None,
+                None,
+            )
 
         sample_rate = self._estimate_sample_rate(time)
         if sample_rate is None or sample_rate <= 0.0:
-            return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64), None, None
+            return (
+                np.empty(0, dtype=np.float64),
+                np.empty(0, dtype=np.float64),
+                None,
+                None,
+                None,
+            )
         
         nfft = self._fft_size
         threshold_db = float(getattr(self.config, "fft_threshold_db", 8.0))
@@ -277,9 +297,13 @@ class Receiver:
 
         peak_idx = int(np.argmax(magnitude)) if magnitude.size else -1
         if peak_idx < 0 or magnitude[peak_idx] < threshold:
-            return freqs, magnitude, None, None
+            return freqs, magnitude, None, None, None
 
-        return freqs, magnitude, float(freqs[peak_idx]), float(magnitude[peak_idx])
+        signal_mag = float(magnitude[peak_idx])
+        snr_linear = signal_mag / max(noise_floor, min_mag)
+        snr_db = float(20.0 * np.log10(snr_linear)) if snr_linear > 0.0 else None
+
+        return freqs, magnitude, float(freqs[peak_idx]), signal_mag, snr_db
 
     def _estimate_sample_rate(self, time: NDArray[np.float64]) -> Optional[float]:
         """Estimate the sampling rate from incoming time stamps."""

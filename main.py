@@ -31,45 +31,53 @@ class SimulationEngine:
         self.adc = LvsAdc(config.adc)
         self.rx = Receiver(config.rx, mode =config.adc.mode)
         self.observers: List[Observer] = list(observers) if observers else [NullObserver()]
+        self._collected_outputs: List[ReceiverOutputs] = []
 
     def run(self) -> List[ReceiverOutputs]:
         """Execute the simulation for the configured duration."""
         total_samples = int(math.ceil(self.config.duration * self.config.tx.fs))
         chunk_size = self.config.tx.chunk_size
         last_outputs: List[ReceiverOutputs] = []
+        self._collected_outputs = []
 
-        while True:
-            self._reset_chain()
-            remaining = total_samples
-            outputs: List[ReceiverOutputs] = []
-            restart_requested = False
+        try:
+            while True:
+                self._reset_chain()
+                remaining = total_samples
+                outputs: List[ReceiverOutputs] = []
+                restart_requested = False
 
-            while remaining > 0:
-                self._wait_if_paused()
-                if self._restart_requested():
-                    restart_requested = True
-                    break
+                while remaining > 0:
+                    self._wait_if_paused()
+                    if self._restart_requested():
+                        restart_requested = True
+                        break
 
-                request = min(chunk_size, remaining)
-                tx_chunk = self.tx.generate_chunk(num_samples=request)
-                self._notify_tx(tx_chunk.plot_time, tx_chunk.plot_samples)
+                    request = min(chunk_size, remaining)
+                    tx_chunk = self.tx.generate_chunk(num_samples=request)
+                    self._notify_tx(tx_chunk.plot_time, tx_chunk.plot_samples)
 
-                adc_time, adc_chunk = self.adc.process_chunk(tx_chunk)
-                self._notify_adc(adc_time, adc_chunk)
+                    adc_time, adc_chunk = self.adc.process_chunk(tx_chunk)
+                    self._notify_adc(adc_time, adc_chunk)
 
-                rx_outputs = self.rx.process_chunk(adc_time, adc_chunk)
-                self._notify_rx(rx_outputs)
+                    rx_outputs = self.rx.process_chunk(adc_time, adc_chunk)
+                    self._notify_rx(rx_outputs)
 
-                outputs.append(rx_outputs)
-                remaining -= len(tx_chunk.plot_samples)
+                    outputs.append(rx_outputs)
+                    self._collected_outputs = outputs
+                    remaining -= len(tx_chunk.plot_samples)
 
-            if restart_requested:
-                continue
+                if restart_requested:
+                    continue
 
-            last_outputs = outputs
+                last_outputs = outputs
+                self._collected_outputs = outputs
 
-            if not self._wait_for_restart_after_completion():
-                return last_outputs
+                if not self._wait_for_restart_after_completion():
+                    return last_outputs
+        except RuntimeError as exc:
+            print(f"Simulation stopped early: {exc}")
+            return self._collected_outputs
 
     def _notify_tx(
         self,
@@ -232,6 +240,11 @@ def main() -> None:
         return
     total_samples = sum(len(out.processed) for out in outputs)
     print(f"Simulation complete: {total_samples} samples processed.")
+
+    snr_values = [out.snr_db for out in outputs if getattr(out, "snr_db", None) is not None]
+    if snr_values:
+        avg_snr = float(np.mean(snr_values))
+        print(f"Average detected SNR: {avg_snr:.2f} dB")
 
 
 if __name__ == "__main__":

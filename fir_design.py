@@ -7,7 +7,7 @@ from config import RxConfig
 def design_fir_filter(
     num_taps: int = RxConfig.fir_taps,
     cutoff_hz: float = RxConfig.fir_cutoff_hz,
-    sample_rate_hz: float = RxConfig.fir_sample_rate_hz,
+    sample_rate_hz: float = RxConfig.fir_sample_full,
     window: str = "hann",
 ) -> np.ndarray:
 
@@ -44,11 +44,9 @@ def design_iir_filter(
     return b, a
 
 if __name__ == "__main__":
-    taps = design_fir_filter()
-    np.set_printoptions(precision=6, suppress=True, linewidth=120)
-    #print(f"FIR taps (len={len(taps)}):")
-    #print(taps)
+    
     with open("fir_tap.txt", "w") as f:
+        taps = design_fir_filter()
         f.write("(\n")
         for t in taps:
             f.write(f"    {t:.10f},\n")
