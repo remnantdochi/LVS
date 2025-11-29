@@ -18,8 +18,8 @@ class ReceiverOutputs:
     processed: NDArray[np.float64]
     fft_freqs: Optional[NDArray[np.float64]] = None
     fft_magnitude: Optional[NDArray[np.float64]] = None
-    detection_hz: Optional[list[float]] = None
-    detection_mag: Optional[list[float]] = None
+    detection_hz: Optional[float] = None
+    detection_mag: Optional[float] = None
 
 
 class Receiver:
@@ -85,18 +85,20 @@ class Receiver:
 
         filter_stage = self._iir_stage if self._filter_type == "iir" else self._fir_stage
         filt_complex, filt_time = filter_stage(cic_time, cic_complex)
+        
         if self.config.pipeline_idx == 2:
             processed = filt_complex.real.astype(np.float64, copy=False)
             return ReceiverOutputs(time=filt_time, processed=processed)
 
-        fft_freqs, fft_mag, detections, tracked = self._fft_stage(filt_time, filt_complex)
+        fft_freqs, fft_mag, detection_hz, detection_mag = self._fft_stage(filt_time, filt_complex)
+        processed = filt_complex.real.astype(np.float64, copy=False)
         return ReceiverOutputs(
             time=filt_time,
             processed=processed,
             fft_freqs=fft_freqs,
             fft_magnitude=fft_mag,
-            detection_hz=detections,
-            detection_mag=tracked,
+            detection_hz=detection_hz,
+            detection_mag=detection_mag,
         )
 
     def _mix_stage(
@@ -263,9 +265,12 @@ class Receiver:
             data = data[:nfft]
 
         window = np.hanning(nfft)
-        spectrum = np.fft.rfft(data * window, n=nfft)
+        spectrum = np.fft.fft(data * window, n=nfft)
+        # Keep non-negative frequencies for magnitude view
+        half_n = nfft // 2 + 1
+        spectrum = spectrum[:half_n]
         magnitude = np.abs(spectrum)
-        freqs = np.fft.rfftfreq(nfft, d=1.0 / sample_rate)
+        freqs = np.fft.fftfreq(nfft, d=1.0 / sample_rate)[:half_n]
 
         noise_floor = float(np.median(magnitude) + min_mag)
         threshold = noise_floor * (10.0 ** (threshold_db / 20.0))
@@ -353,7 +358,10 @@ class Receiver:
 
     def _init_fir_coefficients(self, config: RxConfig) -> NDArray[np.float64]:
         """Return FIR taps from config or a simple placeholder."""
-        taps = np.asarray(getattr(config, "fir_coefficients", (1.0,)), dtype=np.float64)
+        if self._mode == "full":
+            taps = np.asarray(getattr(config, "fir_coefficients_full", (1.0,)), dtype=np.float64)
+        else:
+            taps = np.asarray(getattr(config, "fir_coefficients_subsample", (1.0,)), dtype=np.float64)
         if taps.size == 0:
             return np.asarray([1.0], dtype=np.float64)
         return taps

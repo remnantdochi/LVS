@@ -478,7 +478,7 @@ class PyQtGraphObserver:
         mag = float(y_vals[idx])
         label.setVisible(True)
         label.setText(f"peak {freq:,.0f} Hz")
-        label.setPos(freq, mag)
+        label.setPos(freq, mag * 0.7)
 
     def _update_peak_visibility(self) -> None:
         if self.view_domain != "frequency":

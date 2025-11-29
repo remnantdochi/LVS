@@ -35,7 +35,7 @@ class RxConfig:
     """Receiver DSP parameters."""
 
     carrier_freq: float = 457e3
-    pipeline_idx: int = 1 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter, 3- fft detection]
+    pipeline_idx: int = 3 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter, 3- fft detection]
     filter_type: Literal["fir", "iir"] = "fir"
     
     cic_stages: int = 3
@@ -47,7 +47,7 @@ class RxConfig:
     fir_sample_rate_hz: float = 62500.0
     fir_decimation_full: int = 6
     fir_decimation_subsample: int = 1
-    fir_coefficients: tuple[float, ...] = (
+    fir_coefficients_full: tuple[float, ...] = (
         0.0000000000,
         -0.0000026943,
         -0.0000016250,
@@ -207,7 +207,7 @@ class SimulationConfig:
     adc: AdcConfig = field(default_factory=AdcConfig)
     rx: RxConfig = field(default_factory=RxConfig)
 
-    duration: float = 0.00005  # Total simulation time in seconds
+    duration: float = 0.5  # Total simulation time in seconds
     plot_enabled: bool = True
     plot_stages: tuple[str, ...] = ("tx", "adc", "rx")  # ("tx", "adc", "rx")
     time_scale: float = 1e3
