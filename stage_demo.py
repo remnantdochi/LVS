@@ -427,33 +427,54 @@ def plot_iir_response() -> None:
 
 def plot_czt_example() -> None:
     """Quick demo for visualizing the CZT output."""
-    fs = 1e6
-    duration = 20e-3
+    fs = 25000
+    N = 2048
+    duration = N/fs
     time = np.arange(0.0, duration, 1.0 / fs, dtype=np.float64)
 
-    rf_offset = 2e3
-    rf_freq = 457e3 + rf_offset
+    rf_freq = 457e3
     rf_samples = np.cos(2.0 * np.pi * rf_freq * time)
+    rf_freq2 = 457e3 + 50
+    rf_samples += 0.5 * np.cos(2.0 * np.pi * rf_freq2 * time)
     noise_std = 0.1
     rf_samples += np.random.normal(0, noise_std, size=rf_samples.shape)
+    
+    nco = np.exp(-1j * 2 * np.pi * 457e3 * time)
+    bb_samples = rf_samples * nco
 
     # Define zoom band
-    f_start = 447e3
-    f_end   = 467e3
-    M = 4096
+    f_start = -100
+    f_end   = 100
+    M = 128
 
     # Compute A and W for the CZT
     W = np.exp(-1j * 2 * np.pi * (f_end - f_start) / (M * fs)) # the ratio between points in each step
     A = np.exp(1j * 2 * np.pi * f_start / fs) # the starting point
 
     # SciPy CZT
-    transformer = ScipyCZT(n=len(rf_samples), m=M, w=W, a=A)
-    spec = transformer(rf_samples)
+    transformer = ScipyCZT(n=len(bb_samples), m=M, w=W, a=A)
+    spec = transformer(bb_samples)
     #spec = _czt_fft(rf_samples, m=M, w=W, a=A) # Custom CZT implementation
     freqs = np.linspace(f_start, f_end, M)
 
+    # --- FFT (reference) ---
+    X_fft = np.fft.fftshift(np.fft.fft(bb_samples, N))
+    freqs_fft = np.fft.fftshift(np.fft.fftfreq(N, d=1/fs))
+
+    # FFT magnitude
+    mag_fft = 20 * np.log10(np.abs(X_fft) + 1e-12)
+
+    # CZT band mask
+    fft_band_mask = (freqs_fft >= f_start) & (freqs_fft <= f_end)
+
+    freqs_fft_zoom = freqs_fft[fft_band_mask]
+    mag_fft_zoom = mag_fft[fft_band_mask]
+
     plt.figure(figsize=(10, 4))
-    plt.plot(freqs / 1e3, 20 * np.log10(np.abs(spec) + 1e-12))
+    plt.plot(freqs / 1e3, 20 * np.log10(np.abs(spec) + 1e-12),
+         label="CZT", linewidth=2)
+    plt.plot(freqs_fft_zoom / 1e3, mag_fft_zoom,
+         label="FFT (zoomed)", linestyle="--", linewidth=1)
     plt.title("CZT (SciPy) Zoom Spectrum")
     plt.xlabel("Frequency (kHz)")
     plt.ylabel("Magnitude (dB)")
@@ -601,8 +622,8 @@ if __name__ == "__main__":
     #plot_mix_example()
     #plot_cic_example()
     #plot_cic_interactive()
-    plot_fir_example()
+    #plot_fir_example()
     #plot_fir_response()
-    plot_iir_example()
+    #plot_iir_example()
     #plot_iir_response()
-    #plot_czt_example()
+    plot_czt_example()

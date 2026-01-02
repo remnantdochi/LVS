@@ -1,2 +1,5 @@
 *.pyc
 .DS_Store
+*.txt
+.vscode/
+LVS.code-workspace
