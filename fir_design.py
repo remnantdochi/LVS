@@ -4,10 +4,25 @@ from scipy.signal import firwin
 from scipy.signal import iirfilter
 from config import RxConfig
 
-def design_fir_filter(
+def design_fir_filter_full(
     num_taps: int = RxConfig.fir_taps,
     cutoff_hz: float = RxConfig.fir_cutoff_hz,
     sample_rate_hz: float = RxConfig.fir_sample_full,
+    window: str = "hann",
+) -> np.ndarray:
+
+    return firwin(
+        numtaps=num_taps,
+        cutoff=cutoff_hz,
+        window=window,
+        pass_zero="lowpass",
+        fs=sample_rate_hz,
+    )
+
+def design_fir_filter_subsample(
+    num_taps: int = RxConfig.fir_taps,
+    cutoff_hz: float = RxConfig.fir_cutoff_hz,
+    sample_rate_hz: float = RxConfig.fir_sample_subsample,
     window: str = "hann",
 ) -> np.ndarray:
 
@@ -45,8 +60,15 @@ def design_iir_filter(
 
 if __name__ == "__main__":
     
-    with open("fir_tap.txt", "w") as f:
-        taps = design_fir_filter()
+    with open("fir_tap_full.txt", "w") as f:
+        taps = design_fir_filter_full()
+        f.write("(\n")
+        for t in taps:
+            f.write(f"    {t:.10f},\n")
+        f.write(")\n")
+
+    with open("fir_tap_subsample.txt", "w") as f:
+        taps = design_fir_filter_subsample()
         f.write("(\n")
         for t in taps:
             f.write(f"    {t:.10f},\n")
@@ -64,5 +86,6 @@ if __name__ == "__main__":
         for coeff in a:
             f.write(f"    {coeff:.10f},\n")
         f.write(")\n")
-    print("Saved FIR taps to fir_tap.txt")
+    print("Saved FIR taps to fir_tap_full.txt")
+    print("Saved FIR taps to fir_tap_subsample.txt")
     print("Saved IIR coefficients to iir_tap.txt")
