@@ -31,6 +31,9 @@ class Observer(Protocol):
     def on_rx(self, outputs: ReceiverOutputs) -> None: 
         ...
 
+    def on_czt(self, outputs: ReceiverOutputs) -> None:
+        ...
+
 
 class NullObserver:
     """Default observer that drops all callbacks."""
@@ -52,6 +55,9 @@ class NullObserver:
     def on_rx(self, outputs: ReceiverOutputs) -> None:
         pass
 
+    def on_czt(self, outputs: ReceiverOutputs) -> None:
+        pass
+
 
 class PyQtGraphObserver:
     """
@@ -71,10 +77,18 @@ class PyQtGraphObserver:
         show_tx: bool = True,
         show_adc: bool = True,
         show_rx: bool = True,
+        show_czt: bool = False,
         max_points: int = 5000,
         time_scale: float = 1e3,
         view_domain: Literal["time", "frequency"] = "time",
         freq_view_max: float | None = 1e6,
+        freq_view_center: float | None = None,
+        freq_view_span: float | None = None,
+        freq_view_tx_center: float | None = None,
+        freq_view_tx_span: float | None = None,
+        tx_fft_resolution_hz: float | None = None,
+        peak_count: int = 3,
+        link_x_axes: bool = True,
         window_title: str = "LVS Simulation Monitor",
         plot_height: int = 220,
         row_spacing: int = 32,
@@ -94,10 +108,18 @@ class PyQtGraphObserver:
         self.show_tx = show_tx
         self.show_adc = show_adc
         self.show_rx = show_rx
+        self.show_czt = show_czt
         self.max_points = max_points
         self.time_scale = time_scale
         self.view_domain = view_domain
         self.freq_view_max = freq_view_max
+        self.freq_view_center = freq_view_center
+        self.freq_view_span = freq_view_span
+        self.freq_view_tx_center = freq_view_tx_center
+        self.freq_view_tx_span = freq_view_tx_span
+        self.tx_fft_resolution_hz = tx_fft_resolution_hz
+        self.peak_count = max(1, int(peak_count))
+        self.link_x_axes = link_x_axes
         self.plot_height = plot_height
         self.row_spacing = row_spacing
 
@@ -110,7 +132,9 @@ class PyQtGraphObserver:
 
         self._last_data: Dict[str, NDArray[np.float_]] = {}
         self._last_time: Dict[str, NDArray[np.float_]] = {}
-        self._peak_labels: Dict[str, "pyqtgraph.TextItem"] = {}
+        self._last_fft_freqs: Dict[str, NDArray[np.float_]] = {}
+        self._last_fft_mag: Dict[str, NDArray[np.float_]] = {}
+        self._peak_labels: Dict[str, list["pyqtgraph.TextItem"]] = {}
         self._window = QtWidgets.QMainWindow()
         self._window.setWindowTitle(window_title)
         self._build_ui()
@@ -119,7 +143,7 @@ class PyQtGraphObserver:
         self._resume_event = threading.Event()
         self._restart_event = threading.Event()
 
-        if not any((show_tx, show_adc, show_rx)):
+        if not any((show_tx, show_adc, show_rx, show_czt)):
             self.show_tx = True
 
         self._window.show()
@@ -171,6 +195,8 @@ class PyQtGraphObserver:
             keys = (*keys, "adc")
         if self.show_rx:
             keys = (*keys, "rx")
+        if self.show_czt:
+            keys = (*keys, "czt")
 
         for idx, key in enumerate(keys):
             plot = self._plot_container.addPlot(title=key.upper())
@@ -182,18 +208,23 @@ class PyQtGraphObserver:
             curve = plot.plot([], [], pen=pg.mkPen(width=1.2), symbol="o", symbolSize=3)
             self._plots[key] = plot
             self._curves[key] = curve
-            label = pg.TextItem(color=(255, 180, 0), anchor=(0, 1))
-            label.setVisible(False)
-            plot.addItem(label)
-            self._peak_labels[key] = label
+            labels: list["pyqtgraph.TextItem"] = []
+            for _ in range(self.peak_count):
+                label = pg.TextItem(color=(255, 180, 0), anchor=(0, 1))
+                label.setVisible(False)
+                plot.addItem(label)
+                labels.append(label)
+            self._peak_labels[key] = labels
             if idx < len(keys) - 1:
                 self._plot_container.nextRow()
 
         self._plot_container.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._window.keyPressEvent = self._key_press  # type: ignore
 
-        for plot in list(self._plots.values())[1:]:
-            plot.setXLink(list(self._plots.values())[0])
+        if self.link_x_axes and len(self._plots) > 1:
+            first_plot = list(self._plots.values())[0]
+            for plot in list(self._plots.values())[1:]:
+                plot.setXLink(first_plot)
         self._apply_x_range_limits()
 
     # endregion -----------------------------------------------------------
@@ -269,6 +300,8 @@ class PyQtGraphObserver:
             curve.setData([], [])
         self._last_data.clear()
         self._last_time.clear()
+        self._last_fft_freqs.clear()
+        self._last_fft_mag.clear()
         self._resume_event.clear()
         self._restart_event.set()
         self._active = False
@@ -335,7 +368,18 @@ class PyQtGraphObserver:
     def on_rx(self, outputs: ReceiverOutputs) -> None:
         if not self.show_rx:
             return
+        if outputs.fft_freqs is not None and outputs.fft_magnitude is not None:
+            self._last_fft_freqs["rx"] = outputs.fft_freqs
+            self._last_fft_mag["rx"] = outputs.fft_magnitude
         self._update_plot("rx", outputs.time, outputs.processed)
+
+    def on_czt(self, outputs: ReceiverOutputs) -> None:
+        if not self.show_czt:
+            return
+        if outputs.fft_freqs is not None and outputs.fft_magnitude is not None:
+            self._last_fft_freqs["czt"] = outputs.fft_freqs
+            self._last_fft_mag["czt"] = outputs.fft_magnitude
+        self._update_plot("czt", outputs.time, outputs.processed)
 
     # endregion -----------------------------------------------------------
 
@@ -363,7 +407,7 @@ class PyQtGraphObserver:
         if curve is None:
             return False
 
-        x_vals, y_vals = self._transform_data(time, samples)
+        x_vals, y_vals = self._transform_data(time, samples, key=key)
 
         if self.max_points and len(x_vals) > self.max_points:
             idx = np.linspace(0, len(x_vals) - 1, self.max_points).astype(int)
@@ -395,8 +439,42 @@ class PyQtGraphObserver:
     def _apply_x_range_limits(self) -> None:
         if not self._plots:
             return
-        for plot in self._plots.values():
-            if self.view_domain == "frequency" and self.freq_view_max:
+        for key, plot in self._plots.items():
+            if self.view_domain != "frequency":
+                plot.enableAutoRange("x", True)
+                continue
+
+            if key == "czt" and self.freq_view_center is not None and self.freq_view_span:
+                half_span = self.freq_view_span / 2.0
+                plot.enableAutoRange("x", False)
+                plot.setXRange(
+                    self.freq_view_center - half_span,
+                    self.freq_view_center + half_span,
+                    padding=0.01,
+                )
+                continue
+
+            if key == "rx" and self.freq_view_span:
+                half_span = self.freq_view_span / 2.0
+                plot.enableAutoRange("x", False)
+                plot.setXRange(-half_span, half_span, padding=0.01)
+                continue
+
+            if (
+                key == "tx"
+                and self.freq_view_tx_center is not None
+                and self.freq_view_tx_span
+            ):
+                half_span = self.freq_view_tx_span / 2.0
+                plot.enableAutoRange("x", False)
+                plot.setXRange(
+                    self.freq_view_tx_center - half_span,
+                    self.freq_view_tx_center + half_span,
+                    padding=0.01,
+                )
+                continue
+
+            if self.freq_view_max:
                 plot.enableAutoRange("x", False)
                 plot.setXRange(0, self.freq_view_max, padding=0.01)
             else:
@@ -418,8 +496,18 @@ class PyQtGraphObserver:
         self,
         time: NDArray[np.float_],
         samples: NDArray[np.float_],
+        *,
+        key: str,
     ) -> tuple[NDArray[np.float_], NDArray[np.float_]]:
         if self.view_domain == "frequency":
+            if key == "rx":
+                return self._compute_fft_full(time, samples)
+            if key == "tx":
+                return self._compute_fft_high_res(time, samples)
+            fft_freqs = self._last_fft_freqs.get(key)
+            fft_mag = self._last_fft_mag.get(key)
+            if fft_freqs is not None and fft_mag is not None:
+                return fft_freqs, fft_mag
             return self._compute_fft(time, samples)
         return time * self.time_scale, samples
 
@@ -449,6 +537,69 @@ class PyQtGraphObserver:
             magnitudes = magnitudes[mask]
         return freqs, magnitudes
 
+    def _compute_fft_full(
+        self,
+        time: NDArray[np.float_],
+        samples: NDArray[np.float_],
+    ) -> tuple[NDArray[np.float_], NDArray[np.float_]]:
+        if len(samples) == 0:
+            empty = np.array([], dtype=float)
+            return empty, empty
+        if len(time) < 2:
+            freqs = np.array([0.0], dtype=float)
+            magnitudes = np.abs(samples[:1])
+            return freqs, magnitudes
+        spacing = float(np.mean(np.diff(time)))
+        if spacing <= 0:
+            spacing = 1.0
+        fft_vals = np.fft.fft(samples)
+        freqs = np.fft.fftfreq(len(samples), d=spacing)
+        fft_vals = np.fft.fftshift(fft_vals)
+        freqs = np.fft.fftshift(freqs)
+        magnitudes = np.abs(fft_vals)
+        if self.freq_view_span is not None and self.freq_view_center is not None:
+            half_span = self.freq_view_span / 2.0
+            mask = (freqs >= -half_span) & (freqs <= half_span)
+            if np.any(mask):
+                freqs = freqs[mask]
+                magnitudes = magnitudes[mask]
+        return freqs, magnitudes
+
+    def _compute_fft_high_res(
+        self,
+        time: NDArray[np.float_],
+        samples: NDArray[np.float_],
+    ) -> tuple[NDArray[np.float_], NDArray[np.float_]]:
+        if len(samples) == 0:
+            empty = np.array([], dtype=float)
+            return empty, empty
+        if len(time) < 2:
+            freqs = np.array([0.0], dtype=float)
+            magnitudes = np.abs(samples[:1])
+            return freqs, magnitudes
+        spacing = float(np.mean(np.diff(time)))
+        if spacing <= 0:
+            spacing = 1.0
+        sample_rate = 1.0 / spacing if spacing > 0 else 0.0
+        target_res = self.tx_fft_resolution_hz
+        if not target_res or target_res <= 0.0 or sample_rate <= 0.0:
+            return self._compute_fft(time, samples)
+        target_n = int(round(sample_rate / target_res))
+        target_n = max(target_n, len(samples))
+        fft_vals = np.fft.rfft(samples, n=target_n)
+        freqs = np.fft.rfftfreq(target_n, d=spacing)
+        magnitudes = np.abs(fft_vals)
+        if self.freq_view_tx_center is not None and self.freq_view_tx_span:
+            half_span = self.freq_view_tx_span / 2.0
+            mask = (
+                (freqs >= self.freq_view_tx_center - half_span)
+                & (freqs <= self.freq_view_tx_center + half_span)
+            )
+            if np.any(mask):
+                freqs = freqs[mask]
+                magnitudes = magnitudes[mask]
+        return freqs, magnitudes
+
     def _x_axis_label(self) -> str:
         return "Frequency" if self.view_domain == "frequency" else "Time"
 
@@ -467,23 +618,51 @@ class PyQtGraphObserver:
         x_vals: NDArray[np.float_],
         y_vals: NDArray[np.float_],
     ) -> None:
-        label = self._peak_labels.get(key)
-        if label is None:
+        labels = self._peak_labels.get(key)
+        if not labels:
             return
         if self.view_domain != "frequency" or len(x_vals) == 0:
-            label.setVisible(False)
+            for label in labels:
+                label.setVisible(False)
             return
-        idx = int(np.argmax(y_vals))
-        freq = float(x_vals[idx])
-        mag = float(y_vals[idx])
-        label.setVisible(True)
-        label.setText(f"peak {freq:,.0f} Hz")
-        label.setPos(freq, mag * 0.7)
+        peaks = self._find_peaks(x_vals, y_vals, len(labels))
+        for idx, label in enumerate(labels):
+            if idx >= len(peaks):
+                label.setVisible(False)
+                continue
+            freq, mag = peaks[idx]
+            display_freq = freq
+            if key == "rx" and self.freq_view_center is not None:
+                display_freq = freq + self.freq_view_center
+            label.setVisible(True)
+            label.setText(f"peak {display_freq:,.0f} Hz")
+            label.setPos(freq, mag * 0.7)
 
     def _update_peak_visibility(self) -> None:
         if self.view_domain != "frequency":
-            for label in self._peak_labels.values():
-                label.setVisible(False)
+            for labels in self._peak_labels.values():
+                for label in labels:
+                    label.setVisible(False)
+
+    def _find_peaks(
+        self,
+        x_vals: NDArray[np.float_],
+        y_vals: NDArray[np.float_],
+        count: int,
+    ) -> list[tuple[float, float]]:
+        if y_vals.size == 0 or count <= 0:
+            return []
+        if y_vals.size < 3:
+            idx = int(np.argmax(y_vals))
+            return [(float(x_vals[idx]), float(y_vals[idx]))]
+        peak_mask = (y_vals[1:-1] > y_vals[:-2]) & (y_vals[1:-1] >= y_vals[2:])
+        peak_indices = np.where(peak_mask)[0] + 1
+        if peak_indices.size == 0:
+            idx = int(np.argmax(y_vals))
+            return [(float(x_vals[idx]), float(y_vals[idx]))]
+        ordered = peak_indices[np.argsort(y_vals[peak_indices])[::-1]]
+        top = ordered[:count]
+        return [(float(x_vals[i]), float(y_vals[i])) for i in top]
 
     # region Lifecycle ----------------------------------------------------
     def exec(self) -> None:

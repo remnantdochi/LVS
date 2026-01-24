@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import math
-from typing import List, Sequence
+from typing import Dict, List, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
 
 from config import SimulationConfig
 from lvs_adc import LvsAdc
+from lvs_czt import CztReceiver
 from lvs_rx import Receiver, ReceiverOutputs
 from lvs_tx import Transmitter
 from observer import NullObserver, Observer, PyQtGraphObserver
@@ -29,22 +30,24 @@ class SimulationEngine:
         self.config = config
         self.tx = Transmitter(config.tx)
         self.adc = LvsAdc(config.adc)
-        self.rx = Receiver(config.rx, mode =config.adc.mode)
+        self.rx = Receiver(config.rx, mode=config.adc.mode)
+        self.czt = CztReceiver(config.rx, mode=config.adc.mode)
         self.observers: List[Observer] = list(observers) if observers else [NullObserver()]
-        self._collected_outputs: List[ReceiverOutputs] = []
+        self._collected_outputs: Dict[str, List[ReceiverOutputs]] = {"rx": [], "czt": []}
 
-    def run(self) -> List[ReceiverOutputs]:
+    def run(self) -> Dict[str, List[ReceiverOutputs]]:
         """Execute the simulation for the configured duration."""
         total_samples = int(math.ceil(self.config.duration * self.config.tx.fs))
         chunk_size = self.config.tx.chunk_size
-        last_outputs: List[ReceiverOutputs] = []
-        self._collected_outputs = []
+        last_outputs: Dict[str, List[ReceiverOutputs]] = {"rx": [], "czt": []}
+        self._collected_outputs = {"rx": [], "czt": []}
 
         try:
             while True:
                 self._reset_chain()
                 remaining = total_samples
-                outputs: List[ReceiverOutputs] = []
+                outputs_rx: List[ReceiverOutputs] = []
+                outputs_czt: List[ReceiverOutputs] = []
                 restart_requested = False
 
                 while remaining > 0:
@@ -63,15 +66,19 @@ class SimulationEngine:
                     rx_outputs = self.rx.process_chunk(adc_time, adc_chunk)
                     self._notify_rx(rx_outputs)
 
-                    outputs.append(rx_outputs)
-                    self._collected_outputs = outputs
+                    czt_outputs = self.czt.process_chunk(adc_time, adc_chunk)
+                    self._notify_czt(czt_outputs)
+
+                    outputs_rx.append(rx_outputs)
+                    outputs_czt.append(czt_outputs)
+                    self._collected_outputs = {"rx": outputs_rx, "czt": outputs_czt}
                     remaining -= len(tx_chunk.plot_samples)
 
                 if restart_requested:
                     continue
 
-                last_outputs = outputs
-                self._collected_outputs = outputs
+                last_outputs = {"rx": outputs_rx, "czt": outputs_czt}
+                self._collected_outputs = last_outputs
 
                 if not self._wait_for_restart_after_completion():
                     return last_outputs
@@ -98,6 +105,10 @@ class SimulationEngine:
     def _notify_rx(self, outputs: ReceiverOutputs) -> None:
         for obs in self.observers:
             obs.on_rx(outputs)
+
+    def _notify_czt(self, outputs: ReceiverOutputs) -> None:
+        for obs in self.observers:
+            obs.on_czt(outputs)
 
     def _wait_if_paused(self) -> None:
         for obs in self.observers:
@@ -133,6 +144,9 @@ class SimulationEngine:
         rx_reset = getattr(self.rx, "reset", None)
         if callable(rx_reset):
             rx_reset()
+        czt_reset = getattr(self.czt, "reset", None)
+        if callable(czt_reset):
+            czt_reset()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -158,7 +172,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--plot-stages",
         nargs="*",
-        choices=("tx", "adc", "rx"),
+        choices=("tx", "adc", "rx", "czt"),
         default=None,
         help="Subset of stages to plot when --plot is enabled.",
     )
@@ -191,14 +205,23 @@ def set_config_from_arg(args: argparse.Namespace) -> SimulationConfig:
 
 
 def create_observers_from_config(config: SimulationConfig) -> List[Observer] | None:
-    stages = getattr(config, "plot_stages", ("tx", "adc", "rx"))
+    stages = getattr(config, "plot_stages", ("tx", "rx", "czt"))
     print(f"Enabling plots for stages: {stages}")
+    czt_plot_center = config.rx.czt_center_hz if config.rx.pipeline_idx == 4 else 0.0
     try:
         observer = PyQtGraphObserver(
             show_tx="tx" in stages,
             show_adc="adc" in stages,
             show_rx="rx" in stages,
+            show_czt="czt" in stages,
             time_scale=config.time_scale,
+            freq_view_center=czt_plot_center,
+            freq_view_span=config.rx.czt_span_hz,
+            freq_view_tx_center=config.tx.center_freq,
+            freq_view_tx_span=config.tx.freq_tolerance * 2.0,
+            tx_fft_resolution_hz=config.tx.tx_fft_resolution_hz,
+            peak_count=config.tx.extra_carriers + 1,
+            link_x_axes=False,
         )
     except RuntimeError as exc:
         raise SystemExit(f"Unable to start PyQtGraph observer: {exc}") from exc
@@ -215,7 +238,7 @@ def _wait_for_observers_to_start(observers: Sequence[Observer] | None) -> None:
             wait_fn()
 
 
-def run_simulation(args: argparse.Namespace) -> List[ReceiverOutputs]:
+def run_simulation(args: argparse.Namespace) -> Dict[str, List[ReceiverOutputs]]:
     config = set_config_from_arg(args)
     observers = create_observers_from_config(config)
     _wait_for_observers_to_start(observers)
@@ -235,16 +258,16 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     outputs = run_simulation(args)
 
-    if not outputs:
+    if not outputs.get("rx") and not outputs.get("czt"):
         print("No data produced by the simulation.")
         return
-    total_samples = sum(len(out.processed) for out in outputs)
-    print(f"Simulation complete: {total_samples} samples processed.")
+    total_samples_rx = sum(len(out.processed) for out in outputs.get("rx", []))
+    total_samples_czt = sum(len(out.processed) for out in outputs.get("czt", []))
+    print(
+        "Simulation complete: "
+        f"{total_samples_rx} samples (rx), {total_samples_czt} samples (czt)."
+    )
 
-    snr_values = [out.snr_db for out in outputs if getattr(out, "snr_db", None) is not None]
-    if snr_values:
-        avg_snr = float(np.mean(snr_values))
-        print(f"Average detected SNR: {avg_snr:.2f} dB")
 
 
 if __name__ == "__main__":

@@ -8,17 +8,22 @@ class TxConfig:
     """Transmitter operating parameters."""
 
     fs: float = 5e6  # Sample rate in Hz
-    chunk_size: int = 5000  # Samples per generated chunk - match to DMA buffer size
+    chunk_size: int = 204800  # Samples per generated chunk - match to DMA buffer size
+    # 25khz subsample rate * 1024 samples = 40.96ms per CZT frame
+    # TX sample rate 5Mhz * 40.96ms = 204800 samples per chunk
     center_freq: float = 457e3  # Nominal beacon carrier frequency
     freq_tolerance: float = 100.0  # ± tolerance in Hz
     pulse_length: float = 0.07  # Pulse ON duration in seconds
     pulse_period: float = 1.0  # Pulse repetition period in seconds
     pulse_period_tolerance: float = 0.3  # ± tolerance in seconds
     use_pulse_envelope: bool = False
+    extra_carriers: int = 2
+    tx_fft_resolution_hz: float = 1
+    extra_carrier_offsets: tuple[float, ...] = (-30,80)
 
     seed: int | None = None
     randomize: bool = False
-    use_awgn: bool = True
+    use_awgn: bool = False
     awgn_snr: float = 30.0  # dB
 
 
@@ -35,7 +40,7 @@ class RxConfig:
     """Receiver DSP parameters."""
 
     carrier_freq: float = 457e3
-    pipeline_idx: int = 3 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter, 3- fft detection]
+    pipeline_idx: int = 4 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter, 3 - fft/czt detection, 4 - czt only]
     filter_type: Literal["fir", "iir"] = "fir"
     
     cic_stages: int = 3
@@ -328,6 +333,12 @@ class RxConfig:
     fft_size_subsample: int = 1024
     fft_threshold_db: float = 8
     fft_min_magnitude: float = 1e-9
+    
+    czt_bins: int = 256
+    czt_span_hz: float = 200.0
+    czt_center_hz: float = 457000.0
+    czt_sample_rate: float = 25000.0
+    czt_window: str = "none"
 
 
 
@@ -339,7 +350,8 @@ class SimulationConfig:
     adc: AdcConfig = field(default_factory=AdcConfig)
     rx: RxConfig = field(default_factory=RxConfig)
 
-    duration: float = 0.5  # Total simulation time in seconds
+    duration: float = 10  # Total simulation time in seconds
     plot_enabled: bool = True
-    plot_stages: tuple[str, ...] = ("tx", "rx")  # ("tx", "adc", "rx")
+    plot_stages: tuple[str, ...] = ("tx", "rx", "czt")
     time_scale: float = 1e3
+    plot_peak_count: int = 3

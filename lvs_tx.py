@@ -39,11 +39,13 @@ class Transmitter:
         self._carrier_freq = config.center_freq
         self._pulse_length = config.pulse_length
         self._pulse_period = config.pulse_period
+        self._extra_carrier_freqs: NDArray[np.float64] = np.empty(0, dtype=np.float64)
         self._noise_std = 0.0
         self._noise_resolution = 1e-12
         self._noise_seed_base = 0.0
         if self.config.randomize:
             self._init_random_variation()
+        self._init_extra_carriers()
         if self.config.use_awgn:
             self._init_noise_model()
 
@@ -54,6 +56,7 @@ class Transmitter:
 
         if self.config.randomize:
             self._init_random_variation()
+        self._init_extra_carriers()
         if self.config.use_awgn:
             self._init_noise_model()
 
@@ -85,6 +88,9 @@ class Transmitter:
         """Compose the deterministic carrier, envelope, and AWGN components."""
         time_arr = np.asarray(time, dtype=np.float64)
         carrier = np.cos(2.0 * np.pi * self._carrier_freq * time_arr)
+        if self._extra_carrier_freqs.size:
+            extra = np.cos(2.0 * np.pi * self._extra_carrier_freqs[:, None] * time_arr[None, :])
+            carrier = carrier + np.sum(extra, axis=0)
 
         if self.config.use_pulse_envelope:
             envelope = ((time_arr % self._pulse_period) < self._pulse_length).astype(np.float64)
@@ -109,6 +115,30 @@ class Transmitter:
             self.config.pulse_period + self.config.pulse_period_tolerance,
         )
         self._pulse_period = float(max(period, self.config.pulse_length + 1e-6))
+
+    def _init_extra_carriers(self) -> None:
+        count = int(getattr(self.config, "extra_carriers", 0))
+        if count <= 0:
+            self._extra_carrier_freqs = np.empty(0, dtype=np.float64)
+            return
+        center = float(self.config.center_freq)
+        if not getattr(self.config, "randomize", False):
+            offsets = tuple(getattr(self.config, "extra_carrier_offsets", ()))
+            if offsets:
+                selected = np.asarray(offsets[:count], dtype=np.float64)
+            else:
+                half_span = float(getattr(self.config, "freq_tolerance", 0.0))
+                grid = np.linspace(-half_span, half_span, count + 1, dtype=np.float64)
+                selected = np.delete(grid, count // 2)
+            self._extra_carrier_freqs = center + selected
+            return
+
+        half_span = float(getattr(self.config, "freq_tolerance", 0.0))
+        self._extra_carrier_freqs = self._rng.uniform(
+            center - half_span,
+            center + half_span,
+            size=count,
+        ).astype(np.float64)
 
     def _init_noise_model(self) -> None:
         """Initialize the AWGN variance"""
