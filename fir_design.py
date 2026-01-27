@@ -7,7 +7,7 @@ from config import RxConfig
 def design_fir_filter_full(
     num_taps: int = RxConfig.fir_taps,
     cutoff_hz: float = RxConfig.fir_cutoff_hz,
-    sample_rate_hz: float = RxConfig.fir_sample_full,
+    sample_rate_hz: float = RxConfig.fir_sample_full / RxConfig.fir_decimation_full,
     window: str = "hann",
 ) -> np.ndarray:
 
@@ -22,7 +22,7 @@ def design_fir_filter_full(
 def design_fir_filter_subsample(
     num_taps: int = RxConfig.fir_taps,
     cutoff_hz: float = RxConfig.fir_cutoff_hz,
-    sample_rate_hz: float = RxConfig.fir_sample_subsample,
+    sample_rate_hz: float = RxConfig.fir_sample_subsample / RxConfig.fir_decimation_subsample,
     window: str = "hann",
 ) -> np.ndarray:
 
