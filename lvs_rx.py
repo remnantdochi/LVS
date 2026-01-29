@@ -286,24 +286,29 @@ class Receiver:
 
         window = np.hanning(nfft)
         spectrum = np.fft.fft(data * window, n=nfft)
-        # Keep non-negative frequencies for magnitude view
+        freqs = np.fft.fftfreq(nfft, d=1.0 / sample_rate)
+        # Use non-negative frequencies for detection/thresholding.
         half_n = nfft // 2 + 1
-        spectrum = spectrum[:half_n]
-        magnitude = np.abs(spectrum)
-        freqs = np.fft.fftfreq(nfft, d=1.0 / sample_rate)[:half_n]
+        spectrum_half = spectrum[:half_n]
+        magnitude_half = np.abs(spectrum_half)
+        freqs_half = freqs[:half_n]
 
-        noise_floor = float(np.median(magnitude) + min_mag)
+        spectrum_shift = np.fft.fftshift(spectrum)
+        freqs_shift = np.fft.fftshift(freqs)
+        magnitude_shift = np.abs(spectrum_shift)
+
+        noise_floor = float(np.median(magnitude_half) + min_mag)
         threshold = noise_floor * (10.0 ** (threshold_db / 20.0))
 
-        peak_idx = int(np.argmax(magnitude)) if magnitude.size else -1
-        if peak_idx < 0 or magnitude[peak_idx] < threshold:
-            return freqs, magnitude, None, None, None
+        peak_idx = int(np.argmax(magnitude_half)) if magnitude_half.size else -1
+        if peak_idx < 0 or magnitude_half[peak_idx] < threshold:
+            return freqs_shift, magnitude_shift, None, None, None
 
-        signal_mag = float(magnitude[peak_idx])
+        signal_mag = float(magnitude_half[peak_idx])
         snr_linear = signal_mag / max(noise_floor, min_mag)
         snr_db = float(20.0 * np.log10(snr_linear)) if snr_linear > 0.0 else None
 
-        return freqs, magnitude, float(freqs[peak_idx]), signal_mag, snr_db
+        return freqs_shift, magnitude_shift, float(freqs_half[peak_idx]), signal_mag, snr_db
 
     def _estimate_sample_rate(self, time: NDArray[np.float64]) -> Optional[float]:
         """Estimate the sampling rate from incoming time stamps."""

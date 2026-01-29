@@ -8,9 +8,11 @@ class TxConfig:
     """Transmitter operating parameters."""
 
     fs: float = 5e6  # Sample rate in Hz
-    chunk_size: int = 204800  # Samples per generated chunk - match to DMA buffer size
-    # 25khz subsample rate * 1024 samples = 40.96ms per CZT frame
-    # TX sample rate 5Mhz * 40.96ms = 204800 samples per chunk
+    chunk_size: int = 614400  # Samples per generated chunk - match to DMA buffer size
+    # 25khz subsample rate * 1024 samples * 3 CIC decimation = 0.12288s per CZT frame
+    # TX sample rate 5Mhz * 40.96ms = 614400 samples per chunk
+    # full mode : 1e6 fullmode rate * 1024 * 16 * 6 = 0.098304 per CZT frame
+    # TX sample rate 5Mhz * 98.304ms = 491520 samples per chunk
     center_freq: float = 457e3  # Nominal beacon carrier frequency
     freq_tolerance: float = 100.0  # ± tolerance in Hz
     pulse_length: float = 0.07  # Pulse ON duration in seconds

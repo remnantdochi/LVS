@@ -501,7 +501,11 @@ class PyQtGraphObserver:
     ) -> tuple[NDArray[np.float_], NDArray[np.float_]]:
         if self.view_domain == "frequency":
             if key == "rx":
-                return self._compute_fft_full(time, samples)
+                fft_freqs = self._last_fft_freqs.get(key)
+                fft_mag = self._last_fft_mag.get(key)
+                if fft_freqs is not None and fft_mag is not None:
+                    return fft_freqs, fft_mag
+                return self._compute_fft(time, samples)
             if key == "tx":
                 return self._compute_fft_high_res(time, samples)
             fft_freqs = self._last_fft_freqs.get(key)
@@ -526,11 +530,13 @@ class PyQtGraphObserver:
         spacing = float(np.mean(np.diff(time)))
         if spacing <= 0:
             spacing = 1.0
-        fft_vals = np.fft.rfft(samples)
-        freqs = np.fft.rfftfreq(len(samples), d=spacing)
+        fft_vals = np.fft.fft(samples)
+        freqs = np.fft.fftfreq(len(samples), d=spacing)
+        fft_vals = np.fft.fftshift(fft_vals)
+        freqs = np.fft.fftshift(freqs)
         magnitudes = np.abs(fft_vals)
         if self.freq_view_max is not None:
-            mask = freqs <= self.freq_view_max
+            mask = np.abs(freqs) <= self.freq_view_max
             if not np.any(mask):
                 mask = np.ones_like(freqs, dtype=bool)
             freqs = freqs[mask]
