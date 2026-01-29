@@ -8,6 +8,7 @@ from scipy.signal import CZT as ScipyCZT
 
 from config import RxConfig
 from lvs_rx import Receiver
+from lvs_czt import CztReceiver
 
 def plot_mix_example() -> None:
     """Quick demo for visualizing the mix stage output (single DMA-sized chunk).
@@ -49,7 +50,7 @@ def plot_mix_example() -> None:
         np.cos(2.0 * np.pi * f0 * time_tx)
         + np.cos(2.0 * np.pi * f1 * time_tx)
     )
-    tx_samples += np.random.normal(0, noise_std, size=tx_samples.shape)
+    #tx_samples += np.random.normal(0, noise_std, size=tx_samples.shape)
 
     # Subsample by decimation (sample the high-rate TX waveform at 25 kHz)
     time = time_tx[::decim]
@@ -127,7 +128,7 @@ def plot_cic_example() -> None:
         np.cos(2.0 * np.pi * f0 * time_tx)
         + np.cos(2.0 * np.pi * f1 * time_tx)
     )
-    tx_samples += np.random.normal(0, noise_std, size=tx_samples.shape)
+    #tx_samples += np.random.normal(0, noise_std, size=tx_samples.shape)
     
     decim = int(round(fs_tx / fs))
     time = time_tx[::decim]
@@ -402,49 +403,154 @@ def plot_cic_interactive_tmp() -> None:
 
     fig2.tight_layout(rect=[0, 0, 1, 0.96])
 
+    # Compare CIC response vs FIR-applied response for R=3, N=3.
+    plot_fir_response_tmp(show=False)
+
     plt.show()
     
+def plot_fir_response_tmp(show: bool = True) -> None:
+    """Compare CIC response vs CIC+FIR theoretical response for R=3, N=3."""
+    cfg = RxConfig()
+    cfg.pipeline_idx = 2
+    rx = Receiver(cfg, mode="subsample")
+
+    fs = 25000
+    R = RxConfig.cic_decimation_subsample
+    N = RxConfig.cic_stages
+    M = 1
+
+    rx._cic_decimation = int(R)
+    rx._cic_stages = int(N)
+    rx._reset_cic_state()
+    rx._reset_fir_state()
+
+    # Output spectrum from a white-noise input (CIC + FIR applied).
+    duration = 4096 / fs
+    time = np.arange(0.0, duration, 1.0 / fs)
+    x = np.random.default_rng(0).normal(0.0, 1.0, size=time.size)
+    cic_out, cic_time = rx._cic_stage(time, x.astype(np.complex128))
+    fir_out, fir_time = rx._fir_stage(cic_time, cic_out)
+
+    # Theoretical CIC magnitude response (output-rate axis, in Hz).
+    freqs = np.linspace(-0.5, 0.5, 4096)
+    H_cic = (np.abs(np.sin(np.pi * freqs * R) / (M * np.sin(np.pi * freqs) + 1e-12))) ** N
+    dc_h_idx = int(np.argmin(np.abs(freqs)))
+    Hc_ref = float(np.abs(H_cic[dc_h_idx]) + 1e-12)
+    Hc_dB = 20.0 * np.log10(np.abs(H_cic) / Hc_ref + 1e-12)
+    fs_out = fs / float(R)
+    fH = freqs * fs_out
+
+    # Theoretical FIR response at CIC output rate.
+    taps = rx._fir_coefficients
+    n_fft = 4096
+    H_fir = np.fft.fftshift(np.fft.fft(taps, n_fft))
+    f_fir = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / fs_out))
+
+    # Interpolate FIR response onto CIC frequency grid, then multiply.
+    H_fir_mag = np.interp(fH, f_fir, np.abs(H_fir))
+    H_cf = np.abs(H_cic) * H_fir_mag
+    Hcf_ref = float(np.abs(H_cf[dc_h_idx]) + 1e-12)
+    Hcf_dB = 20.0 * np.log10(H_cf / Hcf_ref + 1e-12)
+
+    # Output spectrum (CIC + FIR).
+    if fir_out.size > 0 and fir_time.size > 1:
+        Y = np.fft.fftshift(np.fft.fft(fir_out))
+        fY = np.fft.fftshift(np.fft.fftfreq(fir_out.size, d=float(np.mean(np.diff(fir_time)))))
+        dc_y_idx = int(Y.size // 2)
+        Y_ref = float(np.abs(Y[dc_y_idx]) + 1e-12)
+        Y_dB = 20.0 * np.log10(np.abs(Y) / Y_ref + 1e-12)
+    else:
+        fY = np.array([])
+        Y_dB = np.array([])
+
+    # CIC-only output spectrum.
+    if cic_out.size > 0 and cic_time.size > 1:
+        Y_cic = np.fft.fftshift(np.fft.fft(cic_out))
+        f_cic = np.fft.fftshift(np.fft.fftfreq(cic_out.size, d=float(np.mean(np.diff(cic_time)))))
+        dc_cic_idx = int(Y_cic.size // 2)
+        Yc_ref = float(np.abs(Y_cic[dc_cic_idx]) + 1e-12)
+        Yc_dB = 20.0 * np.log10(np.abs(Y_cic) / Yc_ref + 1e-12)
+    else:
+        f_cic = np.array([])
+        Yc_dB = np.array([])
+
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
+
+    # Top: theoretical responses.
+    ax0.plot(fH, Hc_dB, label="CIC Response (R=3, N=3)")
+    ax0.plot(fH, Hcf_dB, label="CIC + FIR Response (Theoretical)")
+    ax0.set_title("Theoretical Responses")
+    ax0.set_ylabel("dB relative")
+    ax0.grid(True)
+    ax0.legend()
+
+    # Bottom: output spectra.
+    if f_cic.size > 0:
+        ax1.plot(f_cic, Yc_dB, label="Output Spectrum (CIC)")
+    if fY.size > 0:
+        ax1.plot(fY, Y_dB, label="Output Spectrum (CIC + FIR)")
+    ax1.set_title("Output Spectra")
+    ax1.set_xlabel("Frequency (Hz)")
+    ax1.set_ylabel("dB relative")
+    ax1.grid(True)
+    ax1.legend()
+
+    ax0.set_xlim(-1000, 1000)
+
+    fig.tight_layout()
+    if show:
+        plt.show()
+
 def plot_fir_example() -> None:
     cfg = RxConfig()
     cfg.pipeline_idx = 2
-    rx = Receiver(cfg, mode="full")
+    rx = Receiver(cfg, mode="subsample")
 
-    fs = 1e6
-    duration = 20e-3
-    time = np.arange(0.0, duration, 1.0 / fs, dtype=np.float64)
+    fs = 25e3
+    T = 1.0
 
-    rf_offset = 2e3
-    rf_freq = cfg.carrier_freq + rf_offset
-    rf_samples = np.cos(2.0 * np.pi * rf_freq * time)
+    rf_offset = 20
+    f0 = float(cfg.carrier_freq)
+    f1 = f0 + rf_offset
+
     noise_std = 0.1
-    rf_samples += np.random.normal(0, noise_std, size=rf_samples.shape)
 
-    chunk_size = 5000
-    mixed_parts, mixed_time, cic_parts, cic_time, fir_parts, fir_time = [], [], [], [], [], []
-    for start in range(0, rf_samples.size, chunk_size):
-        stop = min(start + chunk_size, rf_samples.size)
-        chunk = rf_samples[start:stop]
-        t_chunk = time[start:stop]
-        mixed = rx._mix_stage(t_chunk, chunk)
-        mixed_parts.append(mixed)
-        mixed_time.append(t_chunk)
-        cic_output, cic_time_chunk = rx._cic_stage(t_chunk, mixed)
-        cic_parts.append(cic_output)
-        cic_time.append(cic_time_chunk)
-        fir_output, fir_time_chunk = rx._fir_stage(cic_time_chunk, cic_output)
-        fir_parts.append(fir_output)
-        fir_time.append(fir_time_chunk)
+    fs_tx = 1.0e6
+    N_tx = int(round(fs_tx * T))
+    time_tx = np.arange(N_tx, dtype=np.float64) / fs_tx
 
+    tx_samples = (
+        np.cos(2.0 * np.pi * f0 * time_tx)
+        + np.cos(2.0 * np.pi * f1 * time_tx)
+    )
+    tx_samples += np.random.normal(0, noise_std, size=tx_samples.shape)
+    
+    decim = int(round(fs_tx / fs))
+    time = time_tx[::decim]
+    tx_samples_sub = tx_samples[::decim].copy()
 
-    mixed_all = np.concatenate(mixed_parts)
-    mixed_time_all = np.concatenate(mixed_time)
-    cic_all = np.concatenate(cic_parts)
-    cic_time_all = np.concatenate(cic_time)
-    fir_all = np.concatenate(fir_parts)
-    fir_time_all = np.concatenate(fir_time)
+    mix = rx._mix_stage(time, tx_samples_sub)
+    cic, cic_time = rx._cic_stage(time, mix) 
+    fir, fir_time = rx._fir_stage(cic_time, cic)   
 
-
-    _plot_complex_spectrum(fir_all, fir_time_all, title="FIR Spectrum", input_data=cic_all, input_time=cic_time_all)
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(10, 10), sharex=False)
+    ax0.set_xlim(-100.0, 100.0)
+    _plot_complex_spectrum(
+        cic,
+        cic_time,
+        title="After CIC Stage Spectrum",
+        n_peaks=2,
+        ax=ax0,
+    )
+    ax1.set_xlim(-100.0, 100.0)
+    _plot_complex_spectrum(
+        fir,
+        fir_time,
+        title="After FIR Stage Spectrum",
+        n_peaks=2,
+        ax=ax1,
+    )
+    fig.tight_layout()
     plt.show()
 
 def plot_fir_response() -> None:
@@ -504,132 +610,62 @@ def plot_fir_response() -> None:
     plt.tight_layout()
     plt.show()
 
-def plot_iir_example() -> None:
+def plot_fir_example_tmp() -> None:
     cfg = RxConfig()
     cfg.pipeline_idx = 2
-    rx = Receiver(cfg, mode="full")
+    rx = Receiver(cfg, mode="subsample")
 
-    fs = 1e6
-    duration = 20e-3
-    time = np.arange(0.0, duration, 1.0 / fs)
+    fs = 25e3
+    T = 1.0
 
-    rf_offset = 2e3
-    rf_freq = cfg.carrier_freq + rf_offset
-    rf_samples = np.cos(2 * np.pi * rf_freq * time)
-    rf_samples += np.random.normal(0, 0.1, size=rf_samples.shape)
+    rf_offset = 20
+    f0 = float(cfg.carrier_freq)
+    f1 = f0 + rf_offset
 
-    chunk_size = 5000
-    mixed_parts, mixed_time = [], []
-    cic_parts, cic_time = [], []
-    iir_parts, iir_time = [], []
+    noise_std = 0.1
 
-    # === Chunk-by-chunk processing ===
-    for start in range(0, rf_samples.size, chunk_size):
-        stop = min(start + chunk_size, rf_samples.size)
-        chunk = rf_samples[start:stop]
-        t_chunk = time[start:stop]
-        mixed = rx._mix_stage(t_chunk, chunk)
-        mixed_parts.append(mixed)
-        mixed_time.append(t_chunk)
-        cic_out, cic_t = rx._cic_stage(t_chunk, mixed)
-        cic_parts.append(cic_out)
-        cic_time.append(cic_t)
-        iir_out, iir_t = rx._iir_stage(cic_t, cic_out)
-        iir_parts.append(iir_out)
-        iir_time.append(iir_t)
+    fs_tx = 1.0e6
+    N_tx = int(round(fs_tx * T))
+    time_tx = np.arange(N_tx, dtype=np.float64) / fs_tx
 
+    tx_samples = (
+        np.cos(2.0 * np.pi * f0 * time_tx)
+        + np.cos(2.0 * np.pi * f1 * time_tx)
+    )
+    #tx_samples += np.random.normal(0, noise_std, size=tx_samples.shape)
+    
+    decim = int(round(fs_tx / fs))
+    time = time_tx[::decim]
+    tx_samples_sub = tx_samples[::decim].copy()
 
-    mixed_all = np.concatenate(mixed_parts)
-    mixed_time_all = np.concatenate(mixed_time)
-    cic_all = np.concatenate(cic_parts)
-    cic_time_all = np.concatenate(cic_time)
-    iir_all = np.concatenate(iir_parts)
-    iir_time_all = np.concatenate(iir_time)
+    mix = rx._mix_stage(time, tx_samples_sub)
+    cic, cic_time = rx._cic_stage(time, mix) 
+    fir, fir_time = rx._fir_stage(cic_time, cic)   
 
-    _plot_complex_spectrum(iir_all, iir_time_all, title="IIR Stage Spectrum", input_data=cic_all, input_time=cic_time_all)
-    plt.show()
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(10, 10), sharex=False)
+    ax0.set_xlim(457e3 -100.0, 457e3 + 100.0)
+    _plot_complex_spectrum(
+        tx_samples.astype(np.complex128),
+        time_tx,
+        title="TX Reference Spectrum at 1 MHz",
+        n_peaks=2,
+        ax=ax0,
+    )
 
-def plot_iir_response() -> None:
-    """
-    Visualize IIR filter behaviour:
-    (A) Theoretical IIR frequency response
-    (B) IIR output without decimation
-    (C) IIR output with decimation (actual RX stage)
-    """
-    cfg = RxConfig()
-    cfg.pipeline_idx = 1      # IIR stage index (depends on your pipeline)
-    rx = Receiver(cfg, mode="full")
-
-    fs = 62500  # IIR input rate in RX pipeline
-    duration = 0.02
-    time = np.arange(0.0, duration, 1.0 / fs, dtype=np.float64)
-
-    # White noise input → shows full frequency response
-    x = np.random.normal(0.0, 1.0, size=time.shape)
-
-    # --- (A) Theoretical IIR Frequency Response ---
-    b = rx._iir_b_coefficients
-    a = rx._iir_a_coefficients
-    order = rx._iir_order
-
-    N_fft = 4096
-    # zero-pad numerator & denominator to same length
-    b_pad = np.zeros(order + 1)
-    a_pad = np.zeros(order + 1)
-    b_pad[:len(b)] = b
-    a_pad[:len(a)] = a
-
-    H = np.fft.fftshift(np.fft.fft(b_pad, N_fft) / np.fft.fft(a_pad, N_fft))
-    fH = np.fft.fftshift(np.fft.fftfreq(N_fft, 1/fs))
-
-    # --- (B) IIR filtering WITHOUT decimation (manual DF2T loop) ---
-    # replicate algorithm in _iir_stage
-    z = np.zeros(order, dtype=np.complex128)
-    y_no_dec = np.zeros_like(x, dtype=np.complex128)
-
-    for idx, sample in enumerate(x):
-        acc = b_pad[0] * sample + (z[0] if order > 0 else 0)
-        y_no_dec[idx] = acc
-
-        if order > 0:
-            for s in range(order - 1):
-                z[s] = z[s + 1] + b_pad[s + 1] * sample - a_pad[s + 1] * acc
-            z[order - 1] = b_pad[order] * sample - a_pad[order] * acc
-
-    # FFT (no decimation)
-    Y_no_dec = np.fft.fftshift(np.fft.fft(y_no_dec))
-    f_no_dec = np.fft.fftshift(np.fft.fftfreq(y_no_dec.size, 1/fs))
-
-    # --- (C) Actual IIR stage WITH decimation ---
-    rx.reset()
-    y_dec, t_dec = rx._iir_stage(time, x)
-    fs_dec = 1.0 / np.mean(np.diff(t_dec))
-
-    Y_dec = np.fft.fftshift(np.fft.fft(y_dec))
-    f_dec = np.fft.fftshift(np.fft.fftfreq(y_dec.size, 1/fs_dec))
-
-    # --- Plot ---
-    fig, (axH, axA, axB) = plt.subplots(3, 1, figsize=(12, 10))
-
-    # (0) Theoretical IIR response
-    axH.plot(fH/1e3, 20*np.log10(np.abs(H)+1e-12), color="purple")
-    axH.set_title("Theoretical IIR Frequency Response")
-    axH.set_xlim(-fs/2/1e3, fs/2/1e3)
-    axH.grid(True)
-
-    # (1) No-decimation IIR output
-    axA.plot(f_no_dec/1e3, 20*np.log10(np.abs(Y_no_dec)+1e-12), color="orange")
-    axA.set_title("IIR Output (No Decimation)")
-    axA.grid(True)
-    axA.set_xlim(-fs/2/1e3, fs/2/1e3)
-
-    # (2) Decimated IIR output
-    axB.plot(f_dec/1e3, 20*np.log10(np.abs(Y_dec)+1e-12), color="blue")
-    axB.set_title(f"IIR Output (After Decimation, fs_out={fs_dec:.1f} Hz)")
-    axB.grid(True)
-    axB.set_xlim(-fs/2/1e3, fs/2/1e3)
-
-    plt.tight_layout()
+    N_fft = 1024
+    start = (fir.size - N_fft) // 2
+    fir_seg = fir[start:start+N_fft]
+    fir_time_seg = fir_time[start:start+N_fft]
+    
+    ax1.set_xlim(-100.0, 100.0)
+    _plot_complex_spectrum(
+        fir_seg,
+        fir_time_seg,
+        title="Final Output Spectrum",
+        n_peaks=2,
+        ax=ax1,
+    )
+    fig.tight_layout()
     plt.show()
 
 def plot_czt_example() -> None:
@@ -732,6 +768,80 @@ def _czt_fft(x, m=None, w=None, a=1.0 + 0j):
     X = g[:m] * (w ** (k_idx * k_idx / 2.0))
 
     return X
+
+def plot_czt_example_tmp() -> None:
+    cfg = RxConfig()
+    cfg.pipeline_idx = 3
+    rx = Receiver(cfg, mode="subsample")
+    czt_rx = CztReceiver(cfg, mode="subsample")
+
+    fs = 25e3
+    T = 1.0
+
+    rf_offset = 20
+    f0 = float(cfg.carrier_freq)
+    f1 = f0 + rf_offset
+
+    noise_std = 0.1
+
+    fs_tx = 1.0e6
+    N_tx = int(round(fs_tx * T))
+    time_tx = np.arange(N_tx, dtype=np.float64) / fs_tx
+
+    tx_samples = (
+        np.cos(2.0 * np.pi * f0 * time_tx)
+        + np.cos(2.0 * np.pi * f1 * time_tx)
+    )
+    #tx_samples += np.random.normal(0, noise_std, size=tx_samples.shape)
+    
+    decim = int(round(fs_tx / fs))
+    time = time_tx[::decim]
+    tx_samples_sub = tx_samples[::decim].copy()
+
+    mix = rx._mix_stage(time, tx_samples_sub)
+    cic, cic_time = rx._cic_stage(time, mix) 
+    fir, fir_time = rx._fir_stage(cic_time, cic) 
+
+    czt_out = czt_rx.process_chunk(time, tx_samples_sub)
+    czt_freqs = czt_out.fft_freqs
+    czt_mag = czt_out.fft_magnitude
+
+    fig, (ax0, ax1, ax2) = plt.subplots(3, 1, figsize=(10, 12), sharex=False)
+    ax0.set_xlim(457e3 -100.0, 457e3 + 100.0)
+    _plot_complex_spectrum(
+        tx_samples.astype(np.complex128),
+        time_tx,
+        title="TX Reference Spectrum at 1 MHz",
+        n_peaks=2,
+        ax=ax0,
+    )
+
+    N_fft = 1024
+    start = (fir.size - N_fft) // 2
+    fir_seg = fir[start:start+N_fft]
+    fir_time_seg = fir_time[start:start+N_fft]
+    
+    ax1.set_xlim(-100.0, 100.0)
+    _plot_complex_spectrum(
+        fir_seg,
+        fir_time_seg,
+        title="Final Output Spectrum",
+        n_peaks=2,
+        ax=ax1,
+    )
+
+    
+    ax2.set_xlim(457e3-100.0, 457e3+100.0)
+    _plot_magnitude_spectrum(
+        czt_freqs,
+        czt_mag,
+        title="CZT Spectrum (tx_samples_sub)",
+        n_peaks=2,
+        ax=ax2,
+    )
+    fig.tight_layout()
+    plt.show()
+
 
 
 def _plot_time_domain(data: np.ndarray, data_time: np.ndarray, title: str, input_data: np.ndarray, input_time: np.ndarray) -> None:
@@ -871,7 +981,7 @@ def _plot_complex_spectrum(
         idx_sorted = idx_all[np.argsort(mag_dB[idx_all])[::-1]]
 
         selected: list[int] = []
-        guard = 2  # bins on each side
+        guard = 0  # bins on each side
         for idx in idx_sorted:
             if len(selected) >= n_peaks:
                 break
@@ -911,14 +1021,79 @@ def _plot_complex_spectrum(
         plt.show(block=False)
 
 
+def _plot_magnitude_spectrum(
+    freqs: np.ndarray,
+    magnitude: np.ndarray,
+    title: str,
+    n_peaks: int = 2,
+    ax: plt.Axes | None = None,
+) -> None:
+    """Plot a magnitude spectrum that is already in the frequency domain."""
+    if freqs.size == 0 or magnitude.size == 0:
+        return
+
+    mag_dB = 20.0 * np.log10(np.abs(magnitude) + 1e-12)
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 4))
+        show_plot = True
+    else:
+        show_plot = False
+
+    ax.plot(freqs, mag_dB, label="Output")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Magnitude (dB)")
+    ax.set_title(title)
+
+    if n_peaks is None:
+        n_peaks = 0
+    n_peaks = int(max(0, n_peaks))
+
+    if n_peaks > 0:
+        finite_mask = np.isfinite(mag_dB)
+        idx_all = np.where(finite_mask)[0]
+
+        x0, x1 = ax.get_xlim()
+        lo, hi = (x0, x1) if x0 <= x1 else (x1, x0)
+        in_view = (freqs >= lo) & (freqs <= hi)
+        idx_all = idx_all[in_view[idx_all]]
+
+        idx_sorted = idx_all[np.argsort(mag_dB[idx_all])[::-1]]
+
+        selected: list[int] = []
+        guard = 2
+        for idx in idx_sorted:
+            if len(selected) >= n_peaks:
+                break
+            if any(abs(idx - s) <= guard for s in selected):
+                continue
+            selected.append(int(idx))
+
+        for idx in selected:
+            peak_f_hz = freqs[idx]
+            peak_mag = mag_dB[idx]
+            ax.scatter([peak_f_hz], [peak_mag], s=30, zorder=3)
+            ax.annotate(
+                f"{peak_f_hz:.1f} Hz\n{peak_mag:.1f} dB",
+                xy=(peak_f_hz, peak_mag),
+                xytext=(peak_f_hz, peak_mag - 12),
+                textcoords="data",
+                arrowprops=dict(facecolor="black", arrowstyle="->", linewidth=0.8),
+                horizontalalignment="left",
+                verticalalignment="top",
+            )
+
+    if show_plot:
+        ax.figure.tight_layout()
+        plt.show(block=False)
+
+
 
 if __name__ == "__main__":
     np.random.seed(42)
     #plot_mix_example()
     #plot_cic_example()
-    plot_cic_interactive_tmp()
-    #plot_fir_example()
-    #plot_fir_response()
-    #plot_iir_example()
-    #plot_iir_response()
-    #plot_czt_example()
+    #plot_cic_interactive_tmp()
+    plot_fir_example_tmp()
+    #plot_fir_response_tmp()
+    #plot_czt_example_tmp()

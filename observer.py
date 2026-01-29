@@ -641,7 +641,7 @@ class PyQtGraphObserver:
             if key == "rx" and self.freq_view_center is not None:
                 display_freq = freq + self.freq_view_center
             label.setVisible(True)
-            label.setText(f"peak {display_freq:,.0f} Hz")
+            label.setText(f"peak {display_freq:,.2f} Hz")
             label.setPos(freq, mag * 0.7)
 
     def _update_peak_visibility(self) -> None:
