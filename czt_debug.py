@@ -5,15 +5,15 @@ from stage_demo import _czt_fft
 
 
 FS = 25000.0
-CZT_N = 2048
-CZT_M = 512
+CZT_N = 1024
+CZT_M = 256
 
 f_center = 457000.0
 span     = 200.0
 f_start  = f_center - span / 2
 f_end    = f_center + span / 2
 
-with open("input_10_03.txt", "r") as f:
+with open("input.txt", "r") as f:
     lines = [l.strip() for l in f if l.strip()]
 
 adc_raw = np.array(
@@ -42,9 +42,11 @@ M = CZT_M
 print(f"ADC samples : {len(adc_raw)}")
 print(f"CZT bins    : {M}")
 
+# Remove DC offset
 adc_raw -= np.mean(adc_raw)
 
 
+# CZT parameters
 W = np.exp(
     -1j * 2 * np.pi * (f_end - f_start) / (M * FS)
 )
@@ -75,15 +77,15 @@ diff = czt_mag_mcu - czt_mag_py
 print("Max abs error :", np.max(np.abs(diff)))
 print("Mean abs error:", np.mean(np.abs(diff)))
 
-# ---- MCU에서 받은 magnitude (BIN 순서대로) ----
-# 예: uart 로그 파싱해서 만든 배열
+# Magnitude values from MCU (in bin order)
 mag_mcu = np.array(czt_mag_mcu, dtype=np.float64)
 
-# ---- peak bin 찾기 ----
+# Find peak bin
 peak_bin_mcu = np.argmax(mag_mcu)
 peak_bin_py  = np.argmax(czt_mag_py)
-# ---- bin → frequency 변환 ----
-freq_res = (f_end - f_start) / 128
+
+# Convert bin to frequency
+freq_res = (f_end - f_start) / CZT_M
 
 peak_freq_mcu = f_start + peak_bin_mcu * freq_res
 peak_freq_py  = f_start + peak_bin_py  * freq_res

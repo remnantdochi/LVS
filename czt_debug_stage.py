@@ -96,11 +96,11 @@ def _czt_fft(x, m=None, w=None, a=1.0 + 0j):
 
     return X
 
-# === 디버그용 단계별 CZT 함수 ===
+# === Debug CZT function with stage-by-stage results ===
 def _czt_fft_debug(x, m, w, a):
     """
-    main.c의 stage 출력과 1:1 비교를 위한
-    CZT 단계별 결과를 모두 반환
+    For 1:1 comparison with main.c stage outputs
+    Returns all intermediate CZT stage results
     """
     x = np.asarray(x, dtype=np.complex128)
     n = x.shape[0]
@@ -161,7 +161,7 @@ def reconstruct_from_czt(
     """
 
     # ----------------------------
-    # 1. Peak bin 선택 (Python 기준)
+    # 1. Select peak bin (based on Python)
     # ----------------------------
     mag = np.abs(X_py)
     k0 = np.argmax(mag)
@@ -173,13 +173,13 @@ def reconstruct_from_czt(
     print(f"frequency ≈ {f0:.2f} Hz")
 
     # ----------------------------
-    # 2. 시간축
+    # 2. Time axis
     # ----------------------------
     N = len(adc_raw)
     n = np.arange(N)
 
     # ----------------------------
-    # 3. Python CZT 기반 재구성
+    # 3. Reconstruct from Python CZT
     # ----------------------------
     C_py = X_py[k0]
     amp_py = np.abs(C_py) / N
@@ -190,7 +190,7 @@ def reconstruct_from_czt(
     )
 
     # ----------------------------
-    # 4. MCU CZT 기반 재구성
+    # 4. Reconstruct from MCU CZT
     # ----------------------------
     C_mcu = X_mcu[k0]
     amp_mcu = np.abs(C_mcu) / N
@@ -201,7 +201,7 @@ def reconstruct_from_czt(
     )
 
     # ----------------------------
-    # 5. 비교 plot
+    # 5. Compare and plot
     # ----------------------------
     plt.figure(figsize=(11, 5))
 
@@ -236,7 +236,7 @@ def reconstruct_from_czt(
     plt.show()
 
     # ----------------------------
-    # 6. 정량 비교 출력
+    # 6. Quantitative comparison output
     # ----------------------------
     diff_py_mcu = np.abs(x_recon_py - x_recon_mcu)
 
@@ -246,9 +246,9 @@ def reconstruct_from_czt(
 
 def plot_czt_freq_compare(X_mcu, X_py, f_start, df, title="CZT Comparison (MCU vs SciPy)"):
     """
-    X_mcu : MCU CZT 결과 (complex)
-    X_py  : Python CZT 결과 (complex)
-    f_start : CZT 시작 주파수 (Hz)
+    X_mcu : MCU CZT result (complex)
+    X_py  : Python CZT result (complex)
+    f_start : CZT start frequency (Hz)
     df      : CZT bin spacing (Hz)
     """
 
@@ -284,7 +284,7 @@ f_start  = f_center - span / 2
 f_end    = f_center + span / 2
 df = span / CZT_N
 
-# === MCU UART 로그 파싱 함수 ===
+# === MCU UART log parsing function ===
 import re
 import numpy as np
 
@@ -379,38 +379,31 @@ def parse_mcu_stage_log(lines):
         elif current == "X" and line.startswith("X[") and len(nums) == 2:
             stages["X"].append(complex(float(nums[0]), float(nums[1])))
 
-    # NumPy 배열로 변환
-
+    # Convert to NumPy arrays
     for k in ["y", "v", "Y", "V", "G", "g", "X"]:
         stages[k] = np.array(stages[k], dtype=np.complex128)
-    # x[n]은 float64
+    # x[n] is float64
     stages["x"] = np.array(stages["x"], dtype=np.float64)
     stages["adc"] = np.array(stages["adc"], dtype=np.float64)
 
     return stages
 
-# === 단계별 비교 메인 코드 ===
-with open("input_08_04.txt", "r") as f:
+# === Stage-by-stage comparison main code ===
+with open("input.txt", "r") as f:
     lines = [l.strip() for l in f if l.strip()]
 
-
-
-# CZT 파라미터
-M = 128  # MCU의 CZT_M
+# CZT parameters
+M = 128  # MCU's CZT_M
 W = np.exp(-1j * 2 * np.pi * (f_end - f_start) / (M * FS))
 A = np.exp( 1j * 2 * np.pi * f_start / FS)
 
-
-
-# MCU 로그 파싱
+# Parse MCU log
 mcu = parse_mcu_stage_log(lines)
 adc_raw = mcu["adc"]
-# Python 단계별 계산
-adc_raw -= np.mean(adc_raw)  # DC 오프셋 제거
+
+# Python stage-by-stage calculation
+adc_raw -= np.mean(adc_raw)  # Remove DC offset
 dbg = _czt_fft_debug(adc_raw, m=M, w=W, a=A)
-
-
-
 
 print("W (Python) =", W)
 print("A (Python) =", A)
@@ -422,31 +415,31 @@ if mcu["W"] is not None and mcu["A"] is not None:
 else:
     print("MCU W/A not found in log")
 
-print("=== Stage 0 x[n] 비교 ===")
+print("=== Stage 0 x[n] comparison ===")
 print("max |diff| =", np.max(np.abs(mcu["adc"] - mcu["x"])))
 
-print("=== Stage 1 y[n] 비교 ===")
+print("=== Stage 1 y[n] comparison ===")
 print("max |diff| =", np.max(np.abs(dbg["y"][:len(mcu["y"])] - mcu["y"])))
 
-print("=== Stage 2 v[k] 비교 ===")
+print("=== Stage 2 v[k] comparison ===")
 print("max |diff| =", np.max(np.abs(dbg["v"][:len(mcu["v"])] - mcu["v"])))
 
-print("=== Stage 3 Y 비교 ===")
+print("=== Stage 3 Y comparison ===")
 print("ratio ~", np.mean(np.abs(mcu["Y"]) / np.abs(dbg["Y"][:len(mcu["Y"])])))
 
-print("=== Stage 3 G 비교 ===")
+print("=== Stage 3 G comparison ===")
 print("ratio ~", np.mean(np.abs(mcu["G"]) / np.abs(dbg["G"][:len(mcu["G"])])))
 
-print("=== Stage 3 g 비교 ===")
+print("=== Stage 3 g comparison ===")
 print("ratio ~", np.mean(np.abs(mcu["g"]) / np.abs(dbg["g"][:len(mcu["g"])])))
 
-# === Stage 4 비교 ===
-# MCU g[k]에 Python과 동일한 final chirp 적용
+# === Stage 4 comparison ===
+# Apply the same final chirp as Python to MCU g[k]
 k_idx = np.arange(len(mcu["g"]), dtype=np.float64)
 #mcu_X = mcu["g"][:M] * (W ** (k_idx[:M] * k_idx[:M] / 2.0))
 mcu_X = mcu["X"][:len(dbg["X"])]
 
-print("=== Stage 4 X[k] 비교 ===")
+print("=== Stage 4 X[k] comparison ===")
 print("ratio ~", np.mean(np.abs(mcu_X) / np.abs(dbg["X"])))
 
 plot_stage_compare(
