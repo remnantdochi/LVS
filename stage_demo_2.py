@@ -60,7 +60,7 @@ def plot_mix_example() -> None:
     bb = rx._mix_stage(time, tx_samples_sub)
 
 
-    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(10, 10), sharex=False)
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(10, 6), sharex=False)
     ax0.set_xlim(f0 - 100.0, f0 + 100.0)
     _plot_complex_spectrum(
         tx_samples.astype(np.complex128),
@@ -79,9 +79,10 @@ def plot_mix_example() -> None:
         ax=ax1,
     )
     fig.tight_layout()
+    plt.savefig("mix_stage_demo1.png", dpi=900, bbox_inches="tight")
     plt.show()
 
-    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10), sharex=False)
+    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6), sharex=False)
     
     ax1.set_xlim(7000 - 100, 7000 + 100)  # expect aliases near 7 kHz at fs=25 kHz
     _plot_complex_spectrum(
@@ -101,7 +102,9 @@ def plot_mix_example() -> None:
         ax=ax2,
     )
     fig2.tight_layout()
+    plt.savefig("mix_stage_demo2.png", dpi=900, bbox_inches="tight")
     plt.show()
+    
 
 
 
@@ -342,70 +345,42 @@ def plot_cic_interactive_tmp() -> None:
     # Figure 1: Fix N=2, compare R = 8, 12, 16
     # ---------------------------------------------------------------------
     Rs = [8, 12, 16]
+    Ns = [2, 3, 4]
     N_fixed = 2
+    R_fixed = 3
 
-    fig1, (axH1, axY1) = plt.subplots(2, 1, figsize=(12, 8), sharex=False)
-    fig1.suptitle(f"CIC Comparison: N={N_fixed} (R = {Rs})")
+    fig, (axH_R, axH_N) = plt.subplots(2, 1, figsize=(12, 10))
+    fig.suptitle("CIC Theoretical Frequency Response Comparison")
 
+    # Top: Fix N, vary R
     for R in Rs:
         rx.reset()
-        fH, H_dB, fY, Y_dB = compute_cic(R=R, N=N_fixed)
-        axH1.plot(fH, H_dB, label=f"R={R}")
-        axY1.plot(fY, Y_dB, label=f"R={R}")
+        fH, H_dB, _, _ = compute_cic(R=R, N=N_fixed)
+        axH_R.plot(fH, H_dB, label=f"R={R}")
 
-    # Set x-limits based on the widest (smallest-R) output Nyquist
-    max_nyq = (fs / float(min(Rs))) / 2.0
-    axH1.set_xlim(-1.05 * max_nyq, 1.05 * max_nyq)
-    axY1.set_xlim(-1.05 * max_nyq, 1.05 * max_nyq)
+    max_nyq_R = (fs / float(min(Rs))) / 2.0
+    axH_R.set_xlim(-1.05 * max_nyq_R, 1.05 * max_nyq_R)
+    axH_R.set_title(f"Fixed N={N_fixed}, Varying R")
+    axH_R.set_ylabel("20 log10 |H(f)| (dB)")
+    axH_R.grid(True)
+    axH_R.legend()
 
-    axH1.set_title("Theoretical CIC Frequency Response (output-rate axis)")
-    axH1.set_ylabel("20 log10 |H(f)| (dB)")
-    axH1.grid(True)
-    axH1.legend()
-
-    axY1.set_title("After CIC: Decimated Output Spectrum")
-    axY1.set_xlabel("Frequency (Hz)")
-    axY1.set_ylabel("dB relative")
-    axY1.grid(True)
-    axY1.legend()
-
-    fig1.tight_layout(rect=[0, 0, 1, 0.96])
-
-    # ---------------------------------------------------------------------
-    # Figure 2: Fix R=12, compare N = 2, 3, 4
-    # ---------------------------------------------------------------------
-    R_fixed = 3
-    Ns = [2, 3, 4]
-
-    fig2, (axH2, axY2) = plt.subplots(2, 1, figsize=(12, 8), sharex=False)
-    fig2.suptitle(f"CIC Comparison: R={R_fixed} (N = {Ns})")
-
+    # Bottom: Fix R, vary N
     for N in Ns:
         rx.reset()
-        fH, H_dB, fY, Y_dB = compute_cic(R=R_fixed, N=N)
-        axH2.plot(fH, H_dB, label=f"N={N}")
-        axY2.plot(fY, Y_dB, label=f"N={N}")
+        fH, H_dB, _, _ = compute_cic(R=R_fixed, N=N)
+        axH_N.plot(fH, H_dB, label=f"N={N}")
 
-    max_nyq2 = (fs / float(R_fixed)) / 2.0
-    axH2.set_xlim(-1.05 * max_nyq2, 1.05 * max_nyq2)
-    axY2.set_xlim(-1.05 * max_nyq2, 1.05 * max_nyq2)
+    max_nyq_N = (fs / float(R_fixed)) / 2.0
+    axH_N.set_xlim(-1.05 * max_nyq_N, 1.05 * max_nyq_N)
+    axH_N.set_title(f"Fixed R={R_fixed}, Varying N")
+    axH_N.set_ylabel("20 log10 |H(f)| (dB)")
+    axH_N.set_xlabel("Frequency (Hz)")
+    axH_N.grid(True)
+    axH_N.legend()
 
-    axH2.set_title("Theoretical CIC Frequency Response (output-rate axis)")
-    axH2.set_ylabel("20 log10 |H(f)| (dB)")
-    axH2.grid(True)
-    axH2.legend()
-
-    axY2.set_title("After CIC: Decimated Output Spectrum")
-    axY2.set_xlabel("Frequency (Hz)")
-    axY2.set_ylabel("dB relative")
-    axY2.grid(True)
-    axY2.legend()
-
-    fig2.tight_layout(rect=[0, 0, 1, 0.96])
-
-    # Compare CIC response vs FIR-applied response for R=3, N=3.
-    plot_fir_response_tmp(show=False)
-
+    fig.tight_layout()
+    plt.savefig("CIC.png", dpi=600, bbox_inches="tight")
     plt.show()
     
 def plot_fir_response_tmp(show: bool = True) -> None:
@@ -423,13 +398,6 @@ def plot_fir_response_tmp(show: bool = True) -> None:
     rx._cic_stages = int(N)
     rx._reset_cic_state()
     rx._reset_fir_state()
-
-    # Output spectrum from a white-noise input (CIC + FIR applied).
-    duration = 4096 / fs
-    time = np.arange(0.0, duration, 1.0 / fs)
-    x = np.random.default_rng(0).normal(0.0, 1.0, size=time.size)
-    cic_out, cic_time = rx._cic_stage(time, x.astype(np.complex128))
-    fir_out, fir_time = rx._fir_stage(cic_time, cic_out)
 
     # Theoretical CIC magnitude response (output-rate axis, in Hz).
     freqs = np.linspace(-0.5, 0.5, 4096)
@@ -452,54 +420,21 @@ def plot_fir_response_tmp(show: bool = True) -> None:
     Hcf_ref = float(np.abs(H_cf[dc_h_idx]) + 1e-12)
     Hcf_dB = 20.0 * np.log10(H_cf / Hcf_ref + 1e-12)
 
-    # Output spectrum (CIC + FIR).
-    if fir_out.size > 0 and fir_time.size > 1:
-        Y = np.fft.fftshift(np.fft.fft(fir_out))
-        fY = np.fft.fftshift(np.fft.fftfreq(fir_out.size, d=float(np.mean(np.diff(fir_time)))))
-        dc_y_idx = int(Y.size // 2)
-        Y_ref = float(np.abs(Y[dc_y_idx]) + 1e-12)
-        Y_dB = 20.0 * np.log10(np.abs(Y) / Y_ref + 1e-12)
-    else:
-        fY = np.array([])
-        Y_dB = np.array([])
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
 
-    # CIC-only output spectrum.
-    if cic_out.size > 0 and cic_time.size > 1:
-        Y_cic = np.fft.fftshift(np.fft.fft(cic_out))
-        f_cic = np.fft.fftshift(np.fft.fftfreq(cic_out.size, d=float(np.mean(np.diff(cic_time)))))
-        dc_cic_idx = int(Y_cic.size // 2)
-        Yc_ref = float(np.abs(Y_cic[dc_cic_idx]) + 1e-12)
-        Yc_dB = 20.0 * np.log10(np.abs(Y_cic) / Yc_ref + 1e-12)
-    else:
-        f_cic = np.array([])
-        Yc_dB = np.array([])
-
-    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
-
-    # Top: theoretical responses.
-    ax0.plot(fH, Hc_dB, label="CIC Response (R=3, N=3)")
-    ax0.plot(fH, Hcf_dB, label="CIC + FIR Response (Theoretical)")
-    ax0.set_title("Theoretical Responses")
-    ax0.set_ylabel("dB relative")
-    ax0.grid(True)
-    ax0.legend()
-
-    # Bottom: output spectra.
-    if f_cic.size > 0:
-        ax1.plot(f_cic, Yc_dB, label="Output Spectrum (CIC)")
-    if fY.size > 0:
-        ax1.plot(fY, Y_dB, label="Output Spectrum (CIC + FIR)")
-    ax1.set_title("Output Spectra")
-    ax1.set_xlabel("Frequency (Hz)")
-    ax1.set_ylabel("dB relative")
-    ax1.grid(True)
-    ax1.legend()
-
-    ax0.set_xlim(-1000, 1000)
+    # Plot theoretical responses only.
+    ax.plot(fH, Hc_dB, label="CIC Response", linewidth=2)
+    ax.plot(fH, Hcf_dB, label="CIC x FIR Response", linewidth=2)
+    ax.set_title("Theoretical Frequency Responses")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("dB relative")
+    ax.grid(True)
+    ax.legend()
+    ax.set_xlim(-1000, 1000)
 
     fig.tight_layout()
-    if show:
-        plt.show()
+    plt.savefig("CIC_FIR_Response.png", dpi=600, bbox_inches="tight")
+    plt.show()
 
 def plot_fir_example() -> None:
     cfg = RxConfig()
@@ -642,7 +577,7 @@ def plot_fir_example_tmp() -> None:
     cic, cic_time = rx._cic_stage(time, mix) 
     fir, fir_time = rx._fir_stage(cic_time, cic)   
 
-    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(10, 10), sharex=False)
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(10, 6), sharex=False)
     ax0.set_xlim(457e3 -100.0, 457e3 + 100.0)
     _plot_complex_spectrum(
         tx_samples.astype(np.complex128),
@@ -666,6 +601,7 @@ def plot_fir_example_tmp() -> None:
         ax=ax1,
     )
     fig.tight_layout()
+    plt.savefig("fir_stage_demo.png", dpi=900, bbox_inches="tight")
     plt.show()
 
 def plot_czt_example() -> None:
@@ -697,7 +633,7 @@ def plot_czt_example() -> None:
     # SciPy CZT
     transformer = ScipyCZT(n=len(bb_samples), m=M, w=W, a=A)
     spec = transformer(bb_samples)
-    #spec = _czt_fft(rf_samples, m=M, w=W, a=A) # Custom CZT implementation
+    spec2 = _czt_fft(bb_samples, m=M, w=W, a=A) # Custom CZT implementation
     freqs = np.linspace(f_start, f_end, M)
 
     # --- FFT (reference) ---
@@ -716,8 +652,10 @@ def plot_czt_example() -> None:
     plt.figure(figsize=(10, 4))
     plt.plot(freqs / 1e3, 20 * np.log10(np.abs(spec) + 1e-12),
          label="CZT", linewidth=2)
-    plt.plot(freqs_fft_zoom / 1e3, mag_fft_zoom,
-         label="FFT (zoomed)", linestyle="--", linewidth=1)
+    plt.plot(freqs / 1e3, 20 * np.log10(np.abs(spec2) + 1e-12),
+         label="CZT (custom)", linestyle=":", linewidth=1)
+    #plt.plot(freqs_fft_zoom / 1e3, mag_fft_zoom,
+    #     label="FFT (zoomed)", linestyle="--", linewidth=1)
     plt.title("CZT (SciPy) Zoom Spectrum")
     plt.xlabel("Frequency (kHz)")
     plt.ylabel("Magnitude (dB)")
@@ -935,14 +873,14 @@ def _plot_complex_spectrum(
         return
 
     # Apply window to reduce spectral leakage
-    window = np.hanning(data.size)
-    data_w = data * window
+    #window = np.hanning(data.size)
+    data_w = data# * window
 
     spec = np.fft.fftshift(np.fft.fft(data_w))
     freqs = np.fft.fftshift(np.fft.fftfreq(data.size, d=float(np.mean(np.diff(data_time)))))
 
     # Normalize by window coherent gain
-    cg = np.sum(window) / data.size
+    cg = 1.0 #np.sum(window) / data.size
     scale = cg * (data.size if normalize_n else 1.0)
     mag_dB = 20.0 * np.log10(np.abs(spec) / (scale + 1e-12) + 1e-12)
 
@@ -1096,4 +1034,4 @@ if __name__ == "__main__":
     #plot_cic_interactive_tmp()
     plot_fir_example_tmp()
     #plot_fir_response_tmp()
-    #plot_czt_example_tmp()
+    #plot_czt_example()
