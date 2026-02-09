@@ -104,6 +104,9 @@ class PyQtGraphObserver:
         self.QtCore = QtCore
         self.QtWidgets = QtWidgets
         self.pg = pg
+        # Use a light theme for the plot background.
+        pg.setConfigOption("background", "w")
+        pg.setConfigOption("foreground", "k")
 
         self.show_tx = show_tx
         self.show_adc = show_adc
@@ -155,6 +158,7 @@ class PyQtGraphObserver:
         pg = self.pg
 
         central = QtWidgets.QWidget()
+        central.setStyleSheet("background-color: white;")
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)

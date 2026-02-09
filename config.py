@@ -19,9 +19,9 @@ class TxConfig:
     pulse_period: float = 1.0  # Pulse repetition period in seconds
     pulse_period_tolerance: float = 0.3  # ± tolerance in seconds
     use_pulse_envelope: bool = False
-    extra_carriers: int = 2
+    extra_carriers: int = 1
     tx_fft_resolution_hz: float = 1
-    extra_carrier_offsets: tuple[float, ...] = (-30,80)
+    extra_carrier_offsets: tuple[float, ...] = (20,)
 
     seed: int | None = None
     randomize: bool = False
@@ -42,7 +42,7 @@ class RxConfig:
     """Receiver DSP parameters."""
 
     carrier_freq: float = 457e3
-    pipeline_idx: int = 4 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter, 3 - fft/czt detection, 4 - czt only]
+    pipeline_idx: int = 3 #[0 - nco mixer, 1 - cic filter, 2 - fir/iir filter, 3 - fft/czt detection, 4 - czt only]
     filter_type: Literal["fir", "iir"] = "fir"
     
     cic_stages: int = 3
